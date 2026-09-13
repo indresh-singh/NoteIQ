@@ -1,0 +1,14 @@
+.git
+.gitignore
+.venv
+.env*
+.pytest_cache
+.ruff_cache
+__pycache__
+*.py[cod]
+.DS_Store
+data
+dist
+docs
+teams-app
+tests

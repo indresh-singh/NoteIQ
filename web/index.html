@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NoteIQ · Meeting notes</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/vendor/teams.min.js" defer></script>
+  <script src="/static/vendor/adaptivecards.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="brand"><span class="logo">N</span><div><strong>NoteIQ</strong><p>Your meetings, remembered.</p></div></div>
+      <span class="badge">Powered by Microsoft 365 Copilot</span>
+    </header>
+    <section id="welcome" class="welcome">
+      <p class="eyebrow">FROM CONVERSATION TO FOLLOW-THROUGH</p>
+      <h1>Leave the meeting.<br>Keep the clarity.</h1>
+      <p>Find your meeting notes and action items together, right here in Teams.</p>
+      <button id="connect" class="primary">Connect Microsoft 365</button>
+      <p class="hint">Use your organization's work account. Your administrator must enable meeting access.</p>
+    </section>
+    <section id="workspace" hidden>
+      <div class="toolbar">
+        <div><p id="greeting" class="eyebrow"></p><h1>Your meetings</h1></div>
+        <div class="buttons"><button id="refresh">Refresh</button><button id="signout">Sign out</button></div>
+      </div>
+      <div class="statusbar"><span class="dot"></span><p id="status" role="status"></p><button id="retry" hidden>Retry connection</button></div>
+      <p id="notification-status" class="hint" role="status">NoteIQ will notify you in Teams Activity when transcripts and insights are ready.</p>
+      <button id="notification-retry" hidden>Retry notifications</button>
+      <div id="meetings"></div>
+      <div id="empty" class="empty" hidden>
+        <h2>Ready for your next meeting</h2>
+        <p>Organize a Teams meeting and turn on transcription. Your transcript will appear first, followed by Copilot notes when they're ready.</p>
+        <p class="hint">Insights can take up to four hours after a meeting ends. This app follows meetings from the time you connect.</p>
+      </div>
+      <details class="account"><summary>Account settings</summary>
+        <p>Disconnect to stop collection and messages, and delete your saved NoteIQ cards and transcripts. Your original Teams content stays in Microsoft 365.</p>
+        <button id="disconnect">Disconnect and delete my NoteIQ cards</button>
+      </details>
+    </section>
+    <p id="error" class="error" role="alert" hidden></p>
+    <footer><a href="/static/privacy.html" target="_blank" rel="noopener">Privacy</a><a href="/static/terms.html" target="_blank" rel="noopener">About this prototype</a></footer>
+  </main>
+</body>
+</html>

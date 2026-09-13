@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+local.settings.json
+.env
+.env.container
+*.pem
+*.pfx
+*.key
+.DS_Store
+.python_packages/
+dist/
+.azurite/
+data/
+scripts/grant_access.ps1
+docs/AZURE RESOURCES

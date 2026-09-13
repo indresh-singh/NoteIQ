@@ -1,0 +1,19 @@
+{
+  "id": "sample-insight",
+  "endDateTime": "2026-09-11T11:30:00Z",
+  "meetingNotes": [
+    {
+      "title": "Commercial planning",
+      "text": "Pricing approach agreed.",
+      "subpoints": [
+        {"title": "UAE launch", "text": "Launch date remains unchanged."},
+        {"title": "Budget", "text": "Finance approval is still pending."}
+      ]
+    }
+  ],
+  "actionItems": [
+    {"title": "Commercial proposal", "text": "Submit the revised commercial proposal.", "ownerDisplayName": "Sarah"},
+    {"title": "Infrastructure", "text": "Confirm infrastructure capacity.", "ownerDisplayName": "Ahmed"},
+    {"title": "Finance approval", "text": "Confirm the approval status.", "ownerDisplayName": null}
+  ]
+}

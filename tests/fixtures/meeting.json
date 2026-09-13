@@ -1,0 +1,9 @@
+{
+  "id": "sample-meeting",
+  "subject": "FY27 Budget Review",
+  "participants": {
+    "organizer": {
+      "identity": {"user": {"id": "11111111-1111-1111-1111-111111111111"}}
+    }
+  }
+}

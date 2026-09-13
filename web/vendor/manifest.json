@@ -1,0 +1,18 @@
+[
+  {
+    "package": "@microsoft/teams-js",
+    "version": "2.56.0",
+    "file": "teams.min.js",
+    "sha256": "0f84ba9c47d603d6345d07cf6d018245e66fcc7daa860dd987858528fcccec71",
+    "source": "https://registry.npmjs.org/@microsoft/teams-js/-/teams-js-2.56.0.tgz",
+    "integrity": "sha512-8sbXjIO1+QC3EJlr7PtWq1o9soBtkXmBMa0+7bkhSlOWUOZl044qnvjnQRaQhxVnhDnZmlj4i3ZMwfMnBwGi7g=="
+  },
+  {
+    "package": "adaptivecards",
+    "version": "3.0.6",
+    "file": "adaptivecards.min.js",
+    "sha256": "5e7c13f3300ae7b89b34703501e08d709fbb6635f1c6755b92495577a77344f2",
+    "source": "https://registry.npmjs.org/adaptivecards/-/adaptivecards-3.0.6.tgz",
+    "integrity": "sha512-WDCIb2WXZ7cOHJ9HIHRNdhSt861HySVOdN2xPk2aKHAF3JvD8QGQ8/XcNFrDJxCteOog8MM7EBlXfSAR8JXKAg=="
+  }
+]

@@ -1,0 +1,378 @@
+{
+  "info": {
+    "name": "NoteIQ - local and Graph diagnostics",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Run requests individually in order. Graph requests use application credentials. NoteIQ endpoints use a separate browser session token. No notification is sent by this collection."
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "for (const key of [\"meeting\", \"transcript\", \"insight\"]) {",
+          " pm.variables.set(key + \"_path_id\", encodeURIComponent(pm.environment.get(key + \"_id\") || \"\"));",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Microsoft Graph - independent of Azure container",
+      "item": [
+        {
+          "name": "01 Get Graph app token",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "noauth"
+            },
+            "url": "https://login.microsoftonline.com/{{tenant_id}}/oauth2/v2.0/token",
+            "header": [],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "client_id",
+                  "value": "{{client_id}}"
+                },
+                {
+                  "key": "client_secret",
+                  "value": "{{client_secret}}"
+                },
+                {
+                  "key": "scope",
+                  "value": "https://graph.microsoft.com/.default"
+                },
+                {
+                  "key": "grant_type",
+                  "value": "client_credentials"
+                }
+              ]
+            },
+            "description": "Uses the same app identity as NoteIQ. No redirect URI needed for this client-credentials request."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.environment.unset(\"graph_token\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Token acquired\", () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) pm.environment.set(\"graph_token\", pm.response.json().access_token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "02 Find meeting using join URL",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{graph_base}}/users/{{organizer_id}}/onlineMeetings?$filter={{meeting_filter}}",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{graph_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Enter the full unencoded join URL in meeting_join_url. Saves first result as meeting_id; check its subject and organizer."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const join = pm.environment.get(\"meeting_join_url\") || \"\";",
+                  "pm.variables.set(\"meeting_filter\", encodeURIComponent(\"JoinWebUrl eq '\" + join.replace(/'/g, \"''\") + \"'\"));",
+                  "pm.environment.unset(\"meeting_id\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) {",
+                  " const rows = pm.response.json().value || [];",
+                  " pm.environment.set(\"meeting_id\", rows.length ? rows[0].id : \"\");",
+                  " pm.test(\"At least one result\", () => pm.expect(rows.length).to.be.above(0));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "03 Get meeting",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{graph_base}}/users/{{organizer_id}}/onlineMeetings/{{meeting_path_id}}",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{graph_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "If you already know the Graph onlineMeeting.id, set meeting_id and skip request 02. This is not the numeric Teams meeting code."
+          },
+          "event": []
+        },
+        {
+          "name": "04 List transcripts",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{graph_base}}/users/{{organizer_id}}/onlineMeetings/{{meeting_path_id}}/transcripts",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{graph_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Saves first transcript ID. Inspect all results; set transcript_id manually for a different segment. Follow @odata.nextLink if returned."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.environment.unset(\"transcript_id\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) {",
+                  " const rows = pm.response.json().value || [];",
+                  " pm.environment.set(\"transcript_id\", rows.length ? rows[0].id : \"\");",
+                  " pm.test(\"At least one result\", () => pm.expect(rows.length).to.be.above(0));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "05 Download transcript",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "text/vtt"
+              }
+            ],
+            "url": "{{graph_base}}/users/{{organizer_id}}/onlineMeetings/{{meeting_path_id}}/transcripts/{{transcript_path_id}}/content",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{graph_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Returns WebVTT. For SpeakerAttributionNotAllowed use Accept: application/vnd.microsoft.graph.transcript+text."
+          },
+          "event": []
+        },
+        {
+          "name": "06 List Copilot insights",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{graph_base}}/copilot/users/{{organizer_id}}/onlineMeetings/{{meeting_path_id}}/aiInsights",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{graph_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Independent of transcript requests. Empty value means no insights returned by this API for this user/meeting at this time."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.environment.unset(\"insight_id\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) {",
+                  " const rows = pm.response.json().value || [];",
+                  " pm.environment.set(\"insight_id\", rows.length ? rows[0].id : \"\");",
+                  " pm.test(\"At least one result\", () => pm.expect(rows.length).to.be.above(0));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "07 Get Copilot insight",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{graph_base}}/copilot/users/{{organizer_id}}/onlineMeetings/{{meeting_path_id}}/aiInsights/{{insight_path_id}}",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{graph_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Returns actual structured summary and action items."
+          },
+          "event": []
+        },
+        {
+          "name": "08 Inspect subscriptions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{graph_base}}/subscriptions",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{graph_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Check resource, notificationUrl and expirationDateTime for this organizer. This GET does not create or renew subscriptions. Do not share clientState values."
+          },
+          "event": []
+        }
+      ]
+    },
+    {
+      "name": "2. NoteIQ - saved application state",
+      "item": [
+        {
+          "name": "09 Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{noteiq_base}}/healthz",
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "200 checks startup and storage only, not Microsoft permissions or worker delivery."
+          },
+          "event": []
+        },
+        {
+          "name": "10 Signed-in user and status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{noteiq_base}}/api/me",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{noteiq_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Requires the NoteIQ session from this exact deployment. LISTENING is not proof a meeting was processed."
+          },
+          "event": []
+        },
+        {
+          "name": "11 Saved meetings",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{noteiq_base}}/api/meetings",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{noteiq_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Same request as Refresh. Does not fetch historical meetings from Graph. Copy content.transcripts[].transcript.local_id into local_transcript_id."
+          },
+          "event": []
+        },
+        {
+          "name": "12 Saved transcript",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{noteiq_base}}/api/transcripts/{{local_transcript_id}}",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{noteiq_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Returns saved text. local_transcript_id is NoteIQ's integer ID, not Graph's transcript ID."
+          },
+          "event": []
+        }
+      ]
+    }
+  ]
+}
