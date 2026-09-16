@@ -41,6 +41,10 @@ class ClickUpList(BaseModel):
     list_id: str = Field(pattern=r"^[A-Za-z0-9]+$", max_length=64)
 
 
+class ClickUpConnect(BaseModel):
+    in_teams: bool = False
+
+
 class MeetingRecovery(BaseModel):
     meeting_url: str = Field(min_length=20, max_length=2000)
 
@@ -67,10 +71,13 @@ def auth_result(code: str = "", error: str = "", in_teams: bool = False) -> HTML
     )
 
 
-def clickup_result(error: str = "") -> HTMLResponse:
+def clickup_result(error: str = "", in_teams: bool = False) -> HTMLResponse:
     page = (ROOT / "web/clickup-complete.html").read_text()
     return HTMLResponse(
-        page.replace("{{ERROR}}", html.escape(error, quote=True)), status_code=400 if error else 200
+        page.replace("{{ERROR}}", html.escape(error, quote=True)).replace(
+            "{{IN_TEAMS}}", "true" if in_teams else "false"
+        ),
+        status_code=400 if error else 200,
     )
 
 
@@ -253,12 +260,28 @@ def create_app(
         }
 
     @app.post("/api/clickup/connect")
-    async def clickup_connect(request: Request, user: dict = Depends(current_user)):
+    async def clickup_connect(
+        body: ClickUpConnect, request: Request, user: dict = Depends(current_user)
+    ):
         client = request.app.state.clickup
         if not client:
             raise HTTPException(503, "ClickUp is not configured on this NoteIQ server.")
         state = secrets.token_urlsafe(32)
-        request.app.state.store.put("clickup", state, {"user_id": user["id"]})
+        request.app.state.store.put(
+            "clickup", state, {"user_id": user["id"], "in_teams": body.in_teams}
+        )
+        return {
+            "url": request.app.state.config.public_url
+            + "/clickup/authorize?"
+            + urlencode({"state": state})
+        }
+
+    @app.get("/clickup/authorize")
+    async def clickup_authorize(request: Request, state: str = ""):
+        client = request.app.state.clickup
+        item = request.app.state.store.get("clickup", state)
+        if not client or not item:
+            return clickup_result("ClickUp connection expired. Return to NoteIQ and try again.")
         query = urlencode(
             {
                 "client_id": client.config.clickup_client_id,
@@ -266,7 +289,7 @@ def create_app(
                 "state": state,
             }
         )
-        return {"url": "https://app.clickup.com/api?" + query}
+        return RedirectResponse("https://app.clickup.com/api?" + query)
 
     @app.get("/clickup/callback")
     async def clickup_callback(request: Request, state: str = "", code: str = ""):
@@ -274,13 +297,14 @@ def create_app(
         client = request.app.state.clickup
         if not item or not code or not client:
             return clickup_result("ClickUp connection expired. Return to NoteIQ and try again.")
+        in_teams = bool(item.get("in_teams"))
         try:
             token = await client.exchange(code)
             workspaces = await client.workspaces(token)
             request.app.state.store.save_clickup(item["user_id"], client.encrypt(token), workspaces)
         except ValueError as error:
-            return clickup_result(str(error))
-        return clickup_result()
+            return clickup_result(str(error), in_teams)
+        return clickup_result(in_teams=in_teams)
 
     @app.post("/api/clickup/list")
     async def clickup_list(body: ClickUpList, request: Request, user: dict = Depends(current_user)):

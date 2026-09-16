@@ -1,4 +1,8 @@
 const $ = (selector) => document.querySelector(selector);
+function hasActionItems(content) {
+  const insights = content.insights || (content.insight ? [{insight: content.insight}] : []);
+  return insights.some((item) => (item.insight?.actionItems || []).some((a) => a.title || a.text));
+}
 let token = "";
 let inTeams = false;
 let loading = false;
@@ -208,6 +212,7 @@ function renderMeetings(meetings) {
     buttons.append(transcriptButton);
     const clickupButton = element("button", "Send action items to ClickUp");
     clickupButton.dataset.clickup = "true";
+    clickupButton.dataset.hasActions = String(hasActionItems(meeting.content));
     clickupButton.hidden = true;
     clickupButton.onclick = async () => {
       clickupButton.disabled = true;
@@ -234,7 +239,9 @@ function renderClickUp(clickup) {
   $("#clickup-list-id").value = clickup.list_id || "";
   $("#clickup-status").textContent = !connected ? "Connect your ClickUp account to send action items." :
     clickup.list_id ? `New tasks will be created in List ${clickup.list_id}.` : "Choose the ClickUp List that should receive tasks.";
-  document.querySelectorAll("button[data-clickup]").forEach((button) => { button.hidden = !clickup.list_id; });
+  document.querySelectorAll("button[data-clickup]").forEach((button) => {
+    button.hidden = !clickup.list_id || button.dataset.hasActions !== "true";
+  });
 }
 
 $("#clickup-shortcut").onclick = () => {
@@ -296,18 +303,27 @@ $("#recover-meeting").onsubmit = async (event) => {
   finally { button.disabled = false; }
 };
 $("#clickup-connect").onclick = async () => {
-  const popup = window.open("about:blank", "noteiq-clickup", "width=600,height=700");
+  const popup = inTeams ? null : window.open("about:blank", "noteiq-clickup", "width=600,height=700");
   try {
-    if (!popup) throw new Error("Allow popups for NoteIQ, then connect ClickUp again.");
-    const {url} = await api("/api/clickup/connect", {});
-    await clickupPopup(popup, url);
+    if (!inTeams && !popup) throw new Error("Allow popups for NoteIQ, then connect ClickUp again.");
+    const {url} = await api("/api/clickup/connect", {in_teams: inTeams});
+    if (inTeams) await microsoftTeams.authentication.authenticate({url, width: 600, height: 700});
+    else await clickupPopup(popup, url);
     await refresh();
   } catch (error) { if (popup) popup.close(); showError(error.message); }
 };
 $("#clickup-list").onsubmit = async (event) => {
   event.preventDefault();
-  try { await api("/api/clickup/list", {list_id: $("#clickup-list-id").value}); await refresh(); }
-  catch (error) { showError(error.message); }
+  const button = event.submitter;
+  const original = button.textContent;
+  button.disabled = true;
+  try {
+    await api("/api/clickup/list", {list_id: $("#clickup-list-id").value});
+    await refresh();
+    button.textContent = "Saved";
+    setTimeout(() => { button.textContent = original; }, 1500);
+  } catch (error) { showError(error.message); }
+  finally { button.disabled = false; }
 };
 $("#clickup-disconnect").onclick = async () => {
   try { await api("/api/clickup/disconnect", {}); await refresh(); }

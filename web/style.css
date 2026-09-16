@@ -4,7 +4,18 @@
 
 .transcript-text { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.6; }
 
-#clickup-settings{margin:16px 0;padding:14px;border:1px solid var(--line);border-radius:8px}#clickup-settings h2{font-size:16px;margin:0}#clickup-settings form{display:flex;gap:8px;align-items:end;margin-top:10px}#clickup-settings label{display:grid;gap:3px}#clickup-settings input{padding:7px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--text)}
+#clickup-settings{margin:16px 0 20px;padding:20px 22px;border:1px solid var(--line);border-radius:12px;background:var(--paper)}
+#clickup-settings h2{font-size:15px;margin:0 0 4px;letter-spacing:-.2px}
+#clickup-settings #clickup-status{margin:0 0 14px;font-size:13px;color:var(--muted)}
+#clickup-settings #clickup-connect{background:var(--accent);color:#fff;border-color:var(--accent);padding:9px 18px}
+#clickup-settings #clickup-connect:hover{opacity:.9;color:#fff}
+#clickup-settings form{display:flex;gap:10px;align-items:end;margin:0 0 14px}
+#clickup-settings label{display:grid;gap:6px;font-size:12px;color:var(--muted);flex:1;max-width:260px}
+#clickup-settings input{padding:9px 10px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--text);font-size:13px;height:38px}
+#clickup-settings input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+#clickup-settings form button{height:38px;white-space:nowrap}
+#clickup-settings #clickup-disconnect{border-color:transparent;background:transparent;color:var(--muted);padding:6px 0;font-size:12px}
+#clickup-settings #clickup-disconnect:hover{color:#c0392b;border-color:transparent}
 
 .recover-meeting{display:flex;flex-wrap:wrap;justify-content:center;gap:8px;margin:22px auto 0;max-width:680px}.recover-meeting label{width:100%;font-size:12px;color:var(--muted)}.recover-meeting input{min-width:280px;flex:1;padding:9px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--text)}
 

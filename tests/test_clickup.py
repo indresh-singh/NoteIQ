@@ -36,7 +36,11 @@ def connect(client, store, headers):
     client.app.state.clickup = fake
     response = client.post("/api/clickup/connect", headers=headers, json={})
     assert response.status_code == 200
+    assert response.json()["url"].startswith("https://noteiq.test/clickup/authorize?")
     state = response.json()["url"].split("state=")[1]
+    authorize = client.get("/clickup/authorize", params={"state": state}, follow_redirects=False)
+    assert authorize.status_code == 307
+    assert authorize.headers["location"].startswith("https://app.clickup.com/api?")
     response = client.get("/clickup/callback", params={"state": state, "code": "clickup-code"})
     assert response.status_code == 200
     assert "clickup-token" not in response.text
@@ -75,3 +79,14 @@ def test_clickup_requires_connection(client, store, signed_in):
         == 409
     )
     assert client.post("/api/meetings/999/clickup", headers=signed_in, json={}).status_code == 409
+
+
+def test_clickup_oauth_returns_through_teams_popup(client, store, signed_in):
+    client.app.state.clickup = FakeClickUp()
+    response = client.post("/api/clickup/connect", headers=signed_in, json={"in_teams": True})
+    assert response.json()["url"].startswith("https://noteiq.test/clickup/authorize?")
+    state = response.json()["url"].split("state=")[1]
+    response = client.get("/clickup/callback", params={"state": state, "code": "clickup-code"})
+    assert response.status_code == 200
+    assert 'data-in-teams="true"' in response.text
+    assert "/static/clickup-complete.js" in response.text
