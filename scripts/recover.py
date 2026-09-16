@@ -18,7 +18,8 @@ async def recover(
     include_transcripts: bool = False,
     meeting_id: str | None = None,
 ):
-    store = Store(settings().database)
+    config = settings()
+    store = Store(config.database, config.backup_database, config.database_url)
     if user_id not in store.users():
         raise ValueError("Connect this organizer to NoteIQ first.")
     graph = GraphClient()

@@ -57,7 +57,9 @@ uv run python -m scripts.package_teams
 
 Open `https://YOUR-PUBLIC-HOST/healthz`; it must return `{"status":"ok"}`. Then open the base URL and confirm that NoteIQ loads.
 
-The default database is `data/noteiq.sqlite3`. It stores meeting content on this machine. Use one server process; do not start a second worker against the same database.
+The local default is `data/noteiq.sqlite3`. Azure deployments should set
+`NOTEIQ_DATABASE_URL` and follow the [PostgreSQL setup](postgresql.md). PostgreSQL preserves
+meeting content across revisions and safely supports multiple replicas.
 
 ## 4. Upload to Teams and connect
 

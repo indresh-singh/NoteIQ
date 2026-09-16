@@ -13,9 +13,8 @@ az acr login --name ca7403cf3012acr
 docker push "$image"
 az containerapp revision set-mode -n noteiq -g noteiq --mode single --output none
 az containerapp update -n noteiq -g noteiq --image "$image" \
-  --revision-suffix "$tag" --min-replicas 1 --max-replicas 1 \
-  --set-env-vars NOTEIQ_DATABASE=/tmp/noteiq.sqlite3 --output none
+  --revision-suffix "$tag" --min-replicas 1 --max-replicas 1 --output none
 az containerapp revision list -n noteiq -g noteiq \
   --query '[].{Revision:name,Health:properties.healthState,Active:properties.active}' -o table
 echo 'Wait for the new revision to be Healthy. Single mode switches traffic after readiness.'
-echo 'The demo database is temporary; reconnect NoteIQ after deployment.'
+echo 'Data remains in PostgreSQL when NOTEIQ_DATABASE_URL is configured.'

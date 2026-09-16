@@ -4,7 +4,7 @@ import pytest
 
 from app.insights import process_insight
 from app.models import InsightEvent, MeetingSync
-from app.sync import queue_sync, sync_meeting
+from app.sync import recover_from_link, sync_meeting
 from tests.conftest import USER
 
 
@@ -51,8 +51,16 @@ def test_refresh_requires_auth_and_queues_only_own_meetings(client, store, signe
     store.save_meeting(USER, "Mine", {"meeting_id": "mine"})
     assert client.post("/api/sync", json={}).status_code == 401
     assert client.post("/api/sync", headers=signed_in, json={}).json() == {"queued": 1}
-    queue_sync(store, USER)
     with store.connect() as db:
         rows = db.execute("SELECT payload FROM jobs").fetchall()
     assert len(rows) == 1
     assert json.loads(rows[0][0])["meeting_id"] == "mine"
+
+
+async def test_recovery_uses_the_user_meeting_link(store, graph):
+    graph.list.return_value = [{"id": "meeting", "subject": "Recovered"}]
+    result = await recover_from_link(
+        store, graph, USER, "https://teams.microsoft.com/meet/123456789"
+    )
+    assert result == {"found": 1, "queued": 1}
+    assert store.meetings(USER)[0]["subject"] == "Recovered"

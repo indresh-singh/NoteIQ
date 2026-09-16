@@ -1,6 +1,7 @@
 """Teams tab, Microsoft sign-in, and Graph webhook in one local web server."""
 
 import asyncio
+import hashlib
 import hmac
 import html
 import logging
@@ -15,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.auth import identity_client
+from app.clickup import ClickUp
 from app.config import ROOT, Settings, settings
 from app.graph_client import GraphClient
 from app.models import parse_event
@@ -33,6 +35,14 @@ class LoginStart(BaseModel):
 class LoginComplete(BaseModel):
     code: str = Field(min_length=32, max_length=128)
     verifier: str = Field(pattern=r"^[A-Za-z0-9_-]{43,128}$")
+
+
+class ClickUpList(BaseModel):
+    list_id: str = Field(pattern=r"^[A-Za-z0-9]+$", max_length=64)
+
+
+class MeetingRecovery(BaseModel):
+    meeting_url: str = Field(min_length=20, max_length=2000)
 
 
 def bearer(request: Request) -> str:
@@ -57,14 +67,36 @@ def auth_result(code: str = "", error: str = "", in_teams: bool = False) -> HTML
     )
 
 
+def clickup_result(error: str = "") -> HTMLResponse:
+    page = (ROOT / "web/clickup-complete.html").read_text()
+    return HTMLResponse(
+        page.replace("{{ERROR}}", html.escape(error, quote=True)), status_code=400 if error else 200
+    )
+
+
+def actions(content: dict) -> list[dict]:
+    insights = content.get("insights") or [{"insight": content.get("insight", {})}]
+    return [
+        action
+        for item in insights
+        for action in item.get("insight", {}).get("actionItems", [])
+        if action.get("title") or action.get("text")
+    ]
+
+
 def create_app(
     config: Settings | None = None, graph: GraphClient | None = None, background: bool = True
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.config = config or settings()
-        app.state.store = Store(app.state.config.database)
+        app.state.store = Store(
+            app.state.config.database,
+            app.state.config.backup_database,
+            app.state.config.database_url,
+        )
         app.state.graph = graph or GraphClient()
+        app.state.clickup = ClickUp(app.state.config) if app.state.config.clickup_enabled else None
         app.state.repair = asyncio.Event()
         task = (
             asyncio.create_task(run_worker(app.state.store, app.state.graph, app.state.repair))
@@ -76,6 +108,7 @@ def create_app(
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+        app.state.store.close()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -203,7 +236,107 @@ def create_app(
         return {
             **{key: user[key] for key in ("id", "name", "status")},
             "notifications": "DELIVERY_ERROR" if failed else "READY",
+            "clickup": {
+                "available": request.app.state.clickup is not None,
+                "connected": bool(request.app.state.store.clickup(user["id"])),
+            },
         }
+
+    @app.get("/api/clickup")
+    async def clickup_status(request: Request, user: dict = Depends(current_user)):
+        connection = request.app.state.store.clickup(user["id"])
+        return {
+            "available": request.app.state.clickup is not None,
+            "connected": bool(connection),
+            "list_id": connection.get("list_id") if connection else None,
+            "workspaces": connection.get("workspaces", []) if connection else [],
+        }
+
+    @app.post("/api/clickup/connect")
+    async def clickup_connect(request: Request, user: dict = Depends(current_user)):
+        client = request.app.state.clickup
+        if not client:
+            raise HTTPException(503, "ClickUp is not configured on this NoteIQ server.")
+        state = secrets.token_urlsafe(32)
+        request.app.state.store.put("clickup", state, {"user_id": user["id"]})
+        query = urlencode(
+            {
+                "client_id": client.config.clickup_client_id,
+                "redirect_uri": client.config.clickup_redirect_uri,
+                "state": state,
+            }
+        )
+        return {"url": "https://app.clickup.com/api?" + query}
+
+    @app.get("/clickup/callback")
+    async def clickup_callback(request: Request, state: str = "", code: str = ""):
+        item = request.app.state.store.pop("clickup", state)
+        client = request.app.state.clickup
+        if not item or not code or not client:
+            return clickup_result("ClickUp connection expired. Return to NoteIQ and try again.")
+        try:
+            token = await client.exchange(code)
+            workspaces = await client.workspaces(token)
+            request.app.state.store.save_clickup(item["user_id"], client.encrypt(token), workspaces)
+        except ValueError as error:
+            return clickup_result(str(error))
+        return clickup_result()
+
+    @app.post("/api/clickup/list")
+    async def clickup_list(body: ClickUpList, request: Request, user: dict = Depends(current_user)):
+        if not request.app.state.store.clickup(user["id"]):
+            raise HTTPException(409, "Connect ClickUp first.")
+        request.app.state.store.set_clickup_list(user["id"], body.list_id)
+        return {"list_id": body.list_id}
+
+    @app.post("/api/clickup/disconnect")
+    async def clickup_disconnect(request: Request, user: dict = Depends(current_user)):
+        with request.app.state.store.connect() as db:
+            db.execute("DELETE FROM clickup_connections WHERE user_id=?", (user["id"],))
+            db.execute("DELETE FROM clickup_tasks WHERE user_id=?", (user["id"],))
+        return {"status": "disconnected"}
+
+    @app.post("/api/meetings/{meeting_id}/clickup")
+    async def export_clickup(meeting_id: int, request: Request, user: dict = Depends(current_user)):
+        client = request.app.state.clickup
+        connection = request.app.state.store.clickup(user["id"])
+        meeting = request.app.state.store.meeting(user["id"], meeting_id)
+        if not client or not connection:
+            raise HTTPException(409, "Connect ClickUp first.")
+        if not connection.get("list_id"):
+            raise HTTPException(409, "Choose a ClickUp List first.")
+        if not meeting:
+            raise HTTPException(404, "Meeting not found.")
+        try:
+            token = client.decrypt(connection["token"])
+            created = skipped = 0
+            for action in actions(meeting["content"]):
+                raw = "|".join(
+                    (
+                        meeting["content"].get("meeting_id") or "",
+                        action.get("title") or "",
+                        action.get("text") or "",
+                        action.get("ownerDisplayName") or "",
+                    )
+                )
+                action_key = hashlib.sha256(raw.encode()).hexdigest()
+                if request.app.state.store.clickup_task(user["id"], action_key):
+                    skipped += 1
+                    continue
+                name = action.get("title") or action.get("text")
+                detail = action.get("text") or ""
+                owner = action.get("ownerDisplayName") or "Owner not specified"
+                task = await client.create_task(
+                    token,
+                    connection["list_id"],
+                    name,
+                    f"{detail}\n\n**Owner:** {owner}\n\n_Source: NoteIQ — {meeting['subject']}_",
+                )
+                request.app.state.store.save_clickup_task(user["id"], action_key, task)
+                created += 1
+        except ValueError as error:
+            raise HTTPException(502, str(error)) from None
+        return {"created": created, "skipped": skipped}
 
     @app.post("/api/notifications/retry")
     async def retry_notifications(request: Request, user: dict = Depends(current_user)):
@@ -224,6 +357,22 @@ def create_app(
         from app.sync import queue_sync
 
         return {"queued": queue_sync(request.app.state.store, user["id"])}
+
+    @app.post("/api/recover-meeting")
+    async def recover_meeting(
+        body: MeetingRecovery, request: Request, user: dict = Depends(current_user)
+    ):
+        from app.sync import recover_from_link
+
+        try:
+            result = await recover_from_link(
+                request.app.state.store, request.app.state.graph, user["id"], body.meeting_url
+            )
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from None
+        if not result["found"]:
+            raise HTTPException(404, "Meeting not found for your organizer account.")
+        return result
 
     @app.get("/api/transcripts/{transcript_id}")
     async def transcript(transcript_id: int, request: Request, user: dict = Depends(current_user)):
@@ -268,7 +417,9 @@ def create_app(
                 log.warning("Missed Graph events; use the recovery command for affected meetings")
         else:
             users = set(request.app.state.store.users())
-            accepted = [message for message in messages if str(parse_event(message).user_id) in users]
+            accepted = [
+                message for message in messages if str(parse_event(message).user_id) in users
+            ]
             request.app.state.store.enqueue(accepted)
             log.info("Graph webhook received=%s enrolled=%s", len(messages), len(accepted))
         return PlainTextResponse("", status_code=202)

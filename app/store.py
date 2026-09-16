@@ -1,22 +1,98 @@
-"""Durable local storage for a single server process and worker."""
+"""Persistent storage backed by PostgreSQL in Azure or SQLite for local work."""
 
 import hashlib
 import json
+import logging
+import os
 import secrets
+import shutil
 import sqlite3
+import tempfile
+import threading
 import time
 from contextlib import contextmanager, suppress
 from pathlib import Path
 
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
+
+log = logging.getLogger(__name__)
+
+
+class Row(dict):
+    """A small row type compatible with SQLite's named and numeric access."""
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return tuple(self.values())[key]
+        return super().__getitem__(key)
+
+
+class PostgresCursor:
+    def __init__(self, cursor):
+        self.cursor = cursor
+
+    def fetchone(self):
+        row = self.cursor.fetchone()
+        return Row(row) if row else None
+
+    def fetchall(self):
+        return [Row(row) for row in self.cursor.fetchall()]
+
+    def __iter__(self):
+        return iter(self.fetchall())
+
+
+class PostgresConnection:
+    """Expose the tiny DB-API surface used by NoteIQ."""
+
+    def __init__(self, connection):
+        self.connection = connection
+
+    @staticmethod
+    def sql(statement: str) -> str:
+        statement = statement.replace("?", "%s")
+        if "INSERT OR IGNORE" in statement:
+            statement = statement.replace("INSERT OR IGNORE", "INSERT")
+            statement = statement.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
+        return statement
+
+    def execute(self, statement: str, parameters=()):
+        cursor = self.connection.execute(self.sql(statement), parameters)
+        return PostgresCursor(cursor)
+
+    def executemany(self, statement: str, parameters):
+        cursor = self.connection.cursor()
+        cursor.executemany(self.sql(statement), parameters)
+        return PostgresCursor(cursor)
 
 def digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
 class Store:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, backup_path: Path | None = None, database_url=None):
         self.path = path
+        self.backup_path = backup_path
+        self.database_url = (
+            database_url.get_secret_value()
+            if hasattr(database_url, "get_secret_value")
+            else database_url
+        )
+        self._backup_lock = threading.Lock()
+        if self.database_url:
+            self.backup_path = None
+            self.pool = ConnectionPool(
+                self.database_url,
+                min_size=1,
+                max_size=5,
+                kwargs={"row_factory": dict_row},
+                open=True,
+            )
+            self._create_postgres_schema()
+            return
         path.parent.mkdir(parents=True, exist_ok=True)
+        self._restore_if_needed()
         with self.connect() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS users (
@@ -49,6 +125,13 @@ class Store:
                     status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
                     due REAL NOT NULL, UNIQUE(user_id, event_key)
                 );
+                CREATE TABLE IF NOT EXISTS clickup_connections (
+                    user_id TEXT PRIMARY KEY, token TEXT NOT NULL, list_id TEXT, workspaces TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS clickup_tasks (
+                    user_id TEXT NOT NULL, action_key TEXT NOT NULL, task_id TEXT NOT NULL,
+                    task_url TEXT, PRIMARY KEY (user_id, action_key)
+                );
                 -- Retire delegated chat credentials and pending sends from the prior prototype.
                 DROP TABLE IF EXISTS chat_connections;
                 DROP TABLE IF EXISTS outbox;
@@ -57,15 +140,106 @@ class Store:
         with suppress(OSError):
             path.chmod(0o600)
 
+    def _create_postgres_schema(self):
+        statements = (
+            """CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'CONNECTING', enabled INTEGER NOT NULL DEFAULT 1)""",
+            """CREATE TABLE IF NOT EXISTS temporary (
+                kind TEXT, key TEXT, value TEXT NOT NULL, expires DOUBLE PRECISION NOT NULL,
+                PRIMARY KEY (kind, key))""",
+            """CREATE TABLE IF NOT EXISTS sessions (
+                token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires DOUBLE PRECISION NOT NULL)""",
+            """CREATE TABLE IF NOT EXISTS jobs (
+                id BIGSERIAL PRIMARY KEY, payload TEXT NOT NULL, attempts INTEGER DEFAULT 0,
+                due DOUBLE PRECISION NOT NULL, status TEXT NOT NULL DEFAULT 'pending')""",
+            """CREATE TABLE IF NOT EXISTS meetings (
+                id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL, subject TEXT NOT NULL,
+                content TEXT NOT NULL, created DOUBLE PRECISION NOT NULL)""",
+            """CREATE TABLE IF NOT EXISTS transcripts (
+                id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL, meeting_id TEXT NOT NULL,
+                transcript_id TEXT NOT NULL, content TEXT NOT NULL,
+                UNIQUE(user_id, meeting_id, transcript_id))""",
+            """CREATE TABLE IF NOT EXISTS activity_outbox (
+                id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL, event_key TEXT NOT NULL,
+                subject TEXT NOT NULL, message TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
+                due DOUBLE PRECISION NOT NULL, UNIQUE(user_id, event_key))""",
+            """CREATE TABLE IF NOT EXISTS clickup_connections (
+                user_id TEXT PRIMARY KEY, token TEXT NOT NULL, list_id TEXT, workspaces TEXT NOT NULL)""",
+            """CREATE TABLE IF NOT EXISTS clickup_tasks (
+                user_id TEXT NOT NULL, action_key TEXT NOT NULL, task_id TEXT NOT NULL,
+                task_url TEXT, PRIMARY KEY (user_id, action_key))""",
+            "DROP TABLE IF EXISTS chat_connections",
+            "DROP TABLE IF EXISTS outbox",
+            "CREATE INDEX IF NOT EXISTS jobs_ready ON jobs(status, due, id)",
+            """CREATE UNIQUE INDEX IF NOT EXISTS jobs_pending_payload
+            ON jobs(payload) WHERE status='pending'""",
+            "CREATE INDEX IF NOT EXISTS activity_ready ON activity_outbox(status, due, id)",
+            "CREATE INDEX IF NOT EXISTS meetings_user ON meetings(user_id, created DESC)",
+        )
+        with self.connect() as db:
+            for statement in statements:
+                db.execute(statement)
+
     @contextmanager
     def connect(self):
+        if self.database_url:
+            with self.pool.connection() as connection:
+                yield PostgresConnection(connection)
+            return
         db = sqlite3.connect(self.path, timeout=10)
         db.row_factory = sqlite3.Row
         try:
             with db:
                 yield db
+            if db.total_changes:
+                self._save_backup(db)
         finally:
             db.close()
+
+    def close(self):
+        if self.database_url:
+            self.pool.close()
+
+    def _restore_if_needed(self):
+        """Start a new container from the last consistent mounted snapshot."""
+        if not self.backup_path or self.path.exists() or not self.backup_path.exists():
+            return
+        temporary = self.path.with_name(self.path.name + ".restore")
+        try:
+            shutil.copyfile(self.backup_path, temporary)
+            with sqlite3.connect(temporary) as db:
+                if db.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                    raise RuntimeError("database integrity check failed")
+                if not db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'"
+                ).fetchone():
+                    raise RuntimeError("database snapshot has no NoteIQ schema")
+            os.replace(temporary, self.path)
+            log.info("Restored NoteIQ database snapshot")
+        except Exception as error:
+            temporary.unlink(missing_ok=True)
+            raise RuntimeError("Unable to restore NoteIQ database snapshot") from error
+
+    def _save_backup(self, db: sqlite3.Connection):
+        """Copy an SQLite-consistent snapshot to the mounted Azure Files volume."""
+        if not self.backup_path:
+            return
+        with self._backup_lock:
+            self.backup_path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=self.path.parent, delete=False) as file:
+                temporary = Path(file.name)
+            try:
+                with sqlite3.connect(temporary) as copy:
+                    db.backup(copy)
+                staged = self.backup_path.with_name(self.backup_path.name + ".next")
+                shutil.copyfile(temporary, staged)
+                os.replace(staged, self.backup_path)
+            except OSError:
+                log.exception("NoteIQ database snapshot failed")
+            finally:
+                temporary.unlink(missing_ok=True)
 
     def healthy(self) -> bool:
         with self.connect() as db:
@@ -74,10 +248,18 @@ class Store:
     def put(self, kind: str, key: str, value: dict, ttl: int = 600):
         with self.connect() as db:
             db.execute("DELETE FROM temporary WHERE expires < ?", (time.time(),))
-            db.execute(
-                "INSERT OR REPLACE INTO temporary VALUES (?, ?, ?, ?)",
-                (kind, key, json.dumps(value), time.time() + ttl),
-            )
+            if self.database_url:
+                db.execute(
+                    """INSERT INTO temporary(kind, key, value, expires) VALUES (?, ?, ?, ?)
+                    ON CONFLICT(kind, key) DO UPDATE SET value=excluded.value,
+                    expires=excluded.expires""",
+                    (kind, key, json.dumps(value), time.time() + ttl),
+                )
+            else:
+                db.execute(
+                    "INSERT OR REPLACE INTO temporary VALUES (?, ?, ?, ?)",
+                    (kind, key, json.dumps(value), time.time() + ttl),
+                )
 
     def get(self, kind: str, key: str) -> dict | None:
         with self.connect() as db:
@@ -100,7 +282,7 @@ class Store:
             db.execute(
                 """INSERT INTO users(id, name) VALUES (?, ?)
                 ON CONFLICT(id) DO UPDATE SET name=excluded.name, enabled=1,
-                status=CASE WHEN enabled=0 THEN 'CONNECTING' ELSE status END""",
+                status=CASE WHEN users.enabled=0 THEN 'CONNECTING' ELSE users.status END""",
                 (user_id, name),
             )
 
@@ -147,14 +329,63 @@ class Store:
             db.execute("DELETE FROM meetings WHERE user_id=?", (user_id,))
             db.execute("DELETE FROM transcripts WHERE user_id=?", (user_id,))
             db.execute("DELETE FROM activity_outbox WHERE user_id=?", (user_id,))
+            db.execute("DELETE FROM clickup_connections WHERE user_id=?", (user_id,))
+            db.execute("DELETE FROM clickup_tasks WHERE user_id=?", (user_id,))
+
+    def save_clickup(self, user_id: str, token: str, workspaces: list[dict]):
+        with self.connect() as db:
+            db.execute(
+                """INSERT INTO clickup_connections(user_id, token, workspaces) VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET token=excluded.token, workspaces=excluded.workspaces""",
+                (user_id, token, json.dumps(workspaces)),
+            )
+
+    def clickup(self, user_id: str) -> dict | None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT * FROM clickup_connections WHERE user_id=?", (user_id,)
+            ).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        result["workspaces"] = json.loads(result["workspaces"])
+        return result
+
+    def set_clickup_list(self, user_id: str, list_id: str):
+        with self.connect() as db:
+            db.execute(
+                "UPDATE clickup_connections SET list_id=? WHERE user_id=?", (list_id, user_id)
+            )
+
+    def clickup_task(self, user_id: str, action_key: str) -> bool:
+        with self.connect() as db:
+            return bool(
+                db.execute(
+                    "SELECT 1 FROM clickup_tasks WHERE user_id=? AND action_key=?",
+                    (user_id, action_key),
+                ).fetchone()
+            )
+
+    def save_clickup_task(self, user_id: str, action_key: str, task: dict):
+        with self.connect() as db:
+            db.execute(
+                "INSERT OR IGNORE INTO clickup_tasks VALUES (?, ?, ?, ?)",
+                (user_id, action_key, str(task["id"]), task.get("url")),
+            )
 
     def enqueue(self, payloads: list[str]):
         with self.connect() as db:
-            db.executemany(
-                "INSERT INTO jobs(payload, due) SELECT ?, ? WHERE NOT EXISTS "
-                "(SELECT 1 FROM jobs WHERE payload=? AND status='pending')",
-                [(payload, time.time(), payload) for payload in payloads],
-            )
+            if self.database_url:
+                db.executemany(
+                    "INSERT INTO jobs(payload, due) VALUES (?, ?) ON CONFLICT DO NOTHING",
+                    [(payload, time.time()) for payload in payloads],
+                )
+            else:
+                db.executemany(
+                    "INSERT INTO jobs(payload, due) SELECT ?, ? WHERE NOT EXISTS "
+                    "(SELECT 1 FROM jobs WHERE payload=? AND status='pending')",
+                    [(payload, time.time(), payload) for payload in payloads],
+                )
 
     def next_job(self) -> dict | None:
         with self.connect() as db:
@@ -162,6 +393,28 @@ class Store:
                 "SELECT * FROM jobs WHERE status='pending' AND due<=? ORDER BY id LIMIT 1",
                 (time.time(),),
             ).fetchone()
+        return dict(row) if row else None
+
+    def claim_job(self) -> dict | None:
+        with self.connect() as db:
+            if self.database_url:
+                row = db.execute(
+                    """WITH candidate AS (
+                        SELECT id FROM jobs WHERE status='pending' AND due<=?
+                        ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED
+                    )
+                    UPDATE jobs SET due=? FROM candidate
+                    WHERE jobs.id=candidate.id RETURNING jobs.*""",
+                    (time.time(), time.time() + 300),
+                ).fetchone()
+            else:
+                row = db.execute(
+                    """UPDATE jobs SET due=? WHERE id=(
+                        SELECT id FROM jobs WHERE status='pending' AND due<=?
+                        ORDER BY id LIMIT 1
+                    ) RETURNING *""",
+                    (time.time() + 300, time.time()),
+                ).fetchone()
         return dict(row) if row else None
 
     def finish_job(self, job_id: int, status: str):
@@ -181,15 +434,41 @@ class Store:
                 ),
             )
 
+    def next_notification(self) -> dict | None:
+        with self.connect() as db:
+            if self.database_url:
+                row = db.execute(
+                    """WITH candidate AS (
+                        SELECT id FROM activity_outbox WHERE status='pending' AND due<=?
+                        ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED
+                    )
+                    UPDATE activity_outbox SET due=? FROM candidate
+                    WHERE activity_outbox.id=candidate.id RETURNING activity_outbox.*""",
+                    (time.time(), time.time() + 300),
+                ).fetchone()
+            else:
+                row = db.execute(
+                    """UPDATE activity_outbox SET due=? WHERE id=(
+                        SELECT id FROM activity_outbox WHERE status='pending' AND due<=?
+                        ORDER BY id LIMIT 1
+                    ) RETURNING *""",
+                    (time.time() + 300, time.time()),
+                ).fetchone()
+        return dict(row) if row else None
+
     def save_meeting(self, user_id: str, subject: str, content: dict):
         with self.connect() as db:
             if content.get("meeting_id"):
-                row = db.execute(
+                query = (
                     """SELECT id, content FROM meetings
+                    WHERE user_id=? AND content::jsonb ->> 'meeting_id'=?
+                    ORDER BY id DESC LIMIT 1"""
+                    if self.database_url
+                    else """SELECT id, content FROM meetings
                     WHERE user_id=? AND json_extract(content, '$.meeting_id')=?
-                    ORDER BY id DESC LIMIT 1""",
-                    (user_id, content["meeting_id"]),
-                ).fetchone()
+                    ORDER BY id DESC LIMIT 1"""
+                )
+                row = db.execute(query, (user_id, content["meeting_id"])).fetchone()
                 merged = json.loads(row["content"]) if row else {}
                 # Keep every transcript and insight segment under its meeting, in either arrival order.
                 for kind, field in (("insight", "insights"), ("transcript", "transcripts")):
@@ -244,3 +523,11 @@ class Store:
                 (user_id,),
             ).fetchall()
         return [dict(row, content=json.loads(row["content"])) for row in rows]
+
+    def meeting(self, user_id: str, meeting_id: int) -> dict | None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT id, subject, content FROM meetings WHERE id=? AND user_id=?",
+                (meeting_id, user_id),
+            ).fetchone()
+        return dict(row, content=json.loads(row["content"])) if row else None

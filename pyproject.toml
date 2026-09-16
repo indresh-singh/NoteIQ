@@ -11,6 +11,8 @@ dependencies = [
     "python-dotenv>=1,<2",
     "uvicorn>=0.34,<1",
     "pydantic>=2.13.5",
+    "cryptography>=46,<47",
+    "psycopg[binary,pool]>=3.2,<4",
 ]
 
 [tool.pytest.ini_options]

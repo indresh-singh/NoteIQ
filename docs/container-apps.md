@@ -1,7 +1,8 @@
 # Deploy NoteIQ to Azure Container Apps
 
-Azure Container Apps replaces the Mac, tunnel and gateway. These instructions use a single
-**Consumption** replica in **UAE North** and container-local SQLite for the prototype.
+Azure Container Apps replaces the Mac, tunnel and gateway. These instructions use
+**Consumption** in **UAE North**. Configure [Azure Database for PostgreSQL](postgresql.md)
+before relying on persistent data or deploying multiple replicas.
 The subscription must allow Container Apps and Azure Container Registry resources.
 
 ## 1. Build and deploy the container
@@ -92,7 +93,15 @@ Set ingress to **External**, target port to **8000**, and scale to **minimum 1 /
 One running replica is required because the process renews Graph subscriptions in the
 background and SQLite has one queue consumer.
 
-## 3. Keep one prototype replica
+## 3. Database and replica count
+
+The production configuration uses `NOTEIQ_DATABASE_URL` and Azure Database for PostgreSQL.
+It persists through deployments and permits multiple replicas. Follow the
+[PostgreSQL setup and migration](postgresql.md).
+
+The SQLite instructions below apply only if you temporarily run without PostgreSQL.
+
+### Temporary SQLite fallback
 
 Keep one active revision and set minimum and maximum replicas to one. `/tmp/noteiq.sqlite3`
 uses the container's local filesystem and avoids SQLite locking failures on an Azure Files SMB

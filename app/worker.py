@@ -15,7 +15,7 @@ log = logging.getLogger(__name__)
 
 
 async def run_job(store: Store, graph: GraphClient) -> bool:
-    job = store.next_job()
+    job = store.claim_job()
     if not job:
         return False
     try:

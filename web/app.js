@@ -5,6 +5,7 @@ let loading = false;
 let teamsUserId = "";
 let syncMessage = "";
 let previousMeetings = "";
+let previousClickUp = "";
 try { token = sessionStorage.getItem("noteiq-session") || ""; } catch { /* Memory-only fallback. */ }
 
 function remember(value) {
@@ -63,6 +64,22 @@ function popupResult(popup, url) {
       if (popup.closed || Date.now() - started > 600000) {
         cleanup(); reject(new Error("Sign-in window closed or expired. Please connect again."));
       }
+    }, 500);
+    popup.location.href = url;
+  });
+}
+
+function clickupPopup(popup, url) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => { window.removeEventListener("message", receive); clearInterval(timer); };
+    const receive = (event) => {
+      if (event.origin !== location.origin || event.source !== popup || event.data?.type !== "noteiq-clickup") return;
+      cleanup();
+      event.data.error ? reject(new Error(event.data.error)) : resolve();
+    };
+    window.addEventListener("message", receive);
+    const timer = setInterval(() => {
+      if (popup.closed) { cleanup(); reject(new Error("ClickUp connection window closed.")); }
     }, 500);
     popup.location.href = url;
   });
@@ -189,11 +206,42 @@ function renderMeetings(meetings) {
       }
     };
     buttons.append(transcriptButton);
+    const clickupButton = element("button", "Send action items to ClickUp");
+    clickupButton.dataset.clickup = "true";
+    clickupButton.hidden = true;
+    clickupButton.onclick = async () => {
+      clickupButton.disabled = true;
+      try {
+        const result = await api(`/api/meetings/${meeting.id}/clickup`, {});
+        clickupButton.textContent = result.created ? `${result.created} task${result.created === 1 ? "" : "s"} sent` : "Already sent";
+      } catch (error) { showError(error.message); clickupButton.disabled = false; }
+    };
+    buttons.append(clickupButton);
     article.append(buttons, content, element("p", "Generated from Microsoft 365 Copilot meeting insights.", "hint"));
     $("#meetings").append(article);
     buttons.firstChild.click();
   }
 }
+
+function renderClickUp(clickup) {
+  $("#clickup-settings").hidden = !clickup.available;
+  $("#clickup-shortcut").hidden = !clickup.available;
+  if (!clickup.available) return;
+  const connected = clickup.connected;
+  $("#clickup-connect").hidden = connected;
+  $("#clickup-list").hidden = !connected;
+  $("#clickup-disconnect").hidden = !connected;
+  $("#clickup-list-id").value = clickup.list_id || "";
+  $("#clickup-status").textContent = !connected ? "Connect your ClickUp account to send action items." :
+    clickup.list_id ? `New tasks will be created in List ${clickup.list_id}.` : "Choose the ClickUp List that should receive tasks.";
+  document.querySelectorAll("button[data-clickup]").forEach((button) => { button.hidden = !clickup.list_id; });
+}
+
+$("#clickup-shortcut").onclick = () => {
+  const settings = $(".account");
+  settings.open = true;
+  settings.scrollIntoView({behavior: "smooth", block: "start"});
+};
 
 async function refresh(sync = false) {
   if (!token || loading) return;
@@ -211,9 +259,12 @@ async function refresh(sync = false) {
       const result = await api("/api/sync", {});
       syncMessage = result.queued
         ? "Microsoft 365 check queued. Results update automatically as the check completes."
-        : "No known meetings to check yet. New meetings appear when Microsoft sends their updates.";
+        : "No saved meeting follow-ups to check yet. Paste a Teams meeting link below to recover one.";
     }
-    const meetings = await api("/api/meetings");
+    const [meetings, clickup] = await Promise.all([api("/api/meetings"), api("/api/clickup")]);
+    const clickupSignature = JSON.stringify(clickup);
+    if (clickupSignature !== previousClickUp) previousMeetings = "";
+    previousClickUp = clickupSignature;
     if (token !== startedWith) return;
     $("#welcome").hidden = true;
     $("#workspace").hidden = false;
@@ -226,12 +277,42 @@ async function refresh(sync = false) {
     $("#notification-retry").hidden = !notificationError;
     $("#retry").hidden = !["ACCESS_REQUIRED", "CONNECTION_ERROR"].includes(user.status);
     renderMeetings(meetings);
+    renderClickUp(clickup);
     showError();
   } catch (error) { showError(error.message); }
   finally { loading = false; $("#refresh").disabled = false; $("#refresh").textContent = "Refresh"; }
 }
 
 $("#refresh").onclick = () => refresh(true);
+$("#recover-meeting").onsubmit = async (event) => {
+  event.preventDefault();
+  const button = $("#recover-meeting button");
+  button.disabled = true;
+  try {
+    const result = await api("/api/recover-meeting", {meeting_url: $("#meeting-url").value});
+    syncMessage = `Meeting found. Checking ${result.queued ? "transcript and Copilot insights" : "Microsoft 365"}…`;
+    setTimeout(() => refresh(), 1500);
+  } catch (error) { showError(error.message); }
+  finally { button.disabled = false; }
+};
+$("#clickup-connect").onclick = async () => {
+  const popup = window.open("about:blank", "noteiq-clickup", "width=600,height=700");
+  try {
+    if (!popup) throw new Error("Allow popups for NoteIQ, then connect ClickUp again.");
+    const {url} = await api("/api/clickup/connect", {});
+    await clickupPopup(popup, url);
+    await refresh();
+  } catch (error) { if (popup) popup.close(); showError(error.message); }
+};
+$("#clickup-list").onsubmit = async (event) => {
+  event.preventDefault();
+  try { await api("/api/clickup/list", {list_id: $("#clickup-list-id").value}); await refresh(); }
+  catch (error) { showError(error.message); }
+};
+$("#clickup-disconnect").onclick = async () => {
+  try { await api("/api/clickup/disconnect", {}); await refresh(); }
+  catch (error) { showError(error.message); }
+};
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 window.addEventListener("focus", () => refresh());
 $("#retry").onclick = async () => {

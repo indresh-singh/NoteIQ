@@ -4,6 +4,7 @@ import logging
 import time
 from urllib.parse import quote
 
+from app.meetings import meeting_filter
 from app.models import InsightEvent, MeetingSync, TranscriptEvent
 
 log = logging.getLogger(__name__)
@@ -18,6 +19,23 @@ def queue_sync(store, user_id):
     ]
     store.enqueue(payloads)
     return len(payloads)
+
+
+async def recover_from_link(store, graph, user_id, meeting_url):
+    """Seed a missed meeting from its Teams join link, then fetch its artifacts."""
+    meetings = await graph.list(
+        f"/users/{user_id}/onlineMeetings?$filter="
+        + quote(meeting_filter(meeting_url), safe="")
+    )
+    for meeting in meetings:
+        if meeting.get("id"):
+            store.save_meeting(
+                user_id,
+                meeting.get("subject") or "Teams meeting",
+                {"meeting_id": meeting["id"]},
+            )
+    queued = queue_sync(store, user_id)
+    return {"found": len(meetings), "queued": queued}
 
 
 async def sync_meeting(event, graph, store):

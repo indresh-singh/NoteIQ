@@ -4,16 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NoteIQ · Meeting notes</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=1.3.4">
   <script src="/static/vendor/teams.min.js" defer></script>
   <script src="/static/vendor/adaptivecards.min.js" defer></script>
-  <script src="/static/app.js" defer></script>
+  <script src="/static/app.js?v=1.3.4" defer></script>
 </head>
 <body>
   <main>
     <header>
       <div class="brand"><span class="logo">N</span><div><strong>NoteIQ</strong><p>Your meetings, remembered.</p></div></div>
-      <span class="badge">Powered by Microsoft 365 Copilot</span>
+      <div class="header-actions">
+        <button id="clickup-shortcut" class="clickup-shortcut" hidden title="Open ClickUp settings"><img src="/static/clickup.svg" alt=""> ClickUp</button>
+        <span class="badge">Powered by Microsoft 365 Copilot</span>
+      </div>
     </header>
     <section id="welcome" class="welcome">
       <p class="eyebrow">FROM CONVERSATION TO FOLLOW-THROUGH</p>
@@ -30,6 +33,11 @@
       <div class="statusbar"><span class="dot"></span><p id="status" role="status"></p><button id="retry" hidden>Retry connection</button></div>
       <p id="notification-status" class="hint" role="status">NoteIQ will notify you in Teams Activity when transcripts and insights are ready.</p>
       <button id="notification-retry" hidden>Retry notifications</button>
+      <form id="recover-meeting" class="recover-meeting">
+        <label for="meeting-url">Missed a meeting? Paste its Teams join link to check its transcript and Copilot insights.</label>
+        <input id="meeting-url" type="url" required placeholder="https://teams.microsoft.com/meet/...">
+        <button>Check meeting</button>
+      </form>
       <div id="meetings"></div>
       <div id="empty" class="empty" hidden>
         <h2>Ready for your next meeting</h2>
@@ -37,6 +45,16 @@
         <p class="hint">Insights can take up to four hours after a meeting ends. This app follows meetings from the time you connect.</p>
       </div>
       <details class="account"><summary>Account settings</summary>
+        <section id="clickup-settings" hidden>
+          <h2>ClickUp</h2>
+          <p id="clickup-status">Send Copilot action items to a ClickUp List.</p>
+          <button id="clickup-connect">Connect ClickUp</button>
+          <form id="clickup-list" hidden>
+            <label>Default ClickUp List ID <input id="clickup-list-id" required pattern="[A-Za-z0-9]+" maxlength="64" placeholder="For example: 123456"></label>
+            <button>Save List</button>
+          </form>
+          <button id="clickup-disconnect" hidden>Disconnect ClickUp</button>
+        </section>
         <p>Disconnect to stop collection and messages, and delete your saved NoteIQ cards and transcripts. Your original Teams content stays in Microsoft 365.</p>
         <button id="disconnect">Disconnect and delete my NoteIQ cards</button>
       </details>

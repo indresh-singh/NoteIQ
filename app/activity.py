@@ -21,14 +21,9 @@ def queue_notification(store, user_id, event_key, subject, message):
 
 
 async def send_next_notification(store, graph):
-    with store.connect() as db:
-        row = db.execute(
-            "SELECT * FROM activity_outbox WHERE status='pending' AND due<=? ORDER BY id LIMIT 1",
-            (time.time(),),
-        ).fetchone()
-    if not row:
+    job = store.next_notification()
+    if not job:
         return False
-    job = dict(row)
     user = store.user(job["user_id"])
     status = "cancelled"
     if user and user["enabled"]:

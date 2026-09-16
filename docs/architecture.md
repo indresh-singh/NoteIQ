@@ -10,7 +10,7 @@ flowchart TD
     Graph[Microsoft Graph] -->|Transcript and insight notifications| Web
     Web -->|Fetch transcripts, Copilot notes and actions| Graph
     Web -->|App-only Activity notifications| Graph
-    Web <--> DB[(SQLite on persistent storage)]
+    Web <--> DB[(Azure Database for PostgreSQL)]
 ```
 
 The browser uses TeamsJS 2.56.0 and the Adaptive Cards JavaScript renderer 3.0.6. Both are pinned and bundled under `web/vendor`, with licenses and integrity records; there are no runtime CDN requests. Python retains the Teams SDK card models for validation and uses MSAL for Entra authentication. The bot runtime is not part of this design.
@@ -18,11 +18,11 @@ The browser uses TeamsJS 2.56.0 and the Adaptive Cards JavaScript renderer 3.0.6
 ## Sign-in and enrollment
 
 1. The user clicks **Connect Microsoft 365**. The tab creates a random verifier and sends its SHA-256 challenge to the server.
-2. MSAL creates an authorization-code flow, including state, nonce and PKCE. Its secrets stay in an expiring SQLite record.
+2. MSAL creates an authorization-code flow, including state, nonce and PKCE. Its secrets stay in an expiring database record.
 3. TeamsJS opens the sign-in popup; an ordinary browser uses a popup with an origin-checked message back to the page.
 4. Entra redirects to `/auth/callback`. MSAL exchanges the code over HTTPS and validates the flow. The server checks the configured tenant and the user's object ID.
 5. The popup returns a one-use, 60-second handoff code. Only the initiating tab can redeem it using its verifier.
-6. The server enrolls the verified user and issues an opaque eight-hour NoteIQ session. Only its hash is stored in SQLite. The tab keeps the session in session storage, with a memory-only fallback. Microsoft access and refresh tokens never reach the tab. Activity delivery uses the app token and the personal installation's `TeamsActivity.Send.User` resource-specific consent. No delegated chat permission or persistent user-token cache is used.
+6. The server enrolls the verified user and issues an opaque eight-hour NoteIQ session. Only its hash is stored. The tab keeps the session in session storage, with a memory-only fallback. Microsoft access and refresh tokens never reach the tab. Activity delivery uses the app token and the personal installation's `TeamsActivity.Send.User` resource-specific consent. No delegated chat permission or persistent user-token cache is used.
 
 This avoids reliance on third-party cookies in Teams. Signing in authenticates the user; it does not grant the application's background Graph permissions. A Copilot license, admin consent and the application access policy remain prerequisites.
 
@@ -30,19 +30,19 @@ This avoids reliance on third-party cookies in Teams. Signing in authenticates t
 
 Enrolled users replace the old `PILOT_USER_IDS` environment variable. Enrollment requests subscription setup immediately. The worker renews both transcript and insight subscriptions every 15 minutes with a one-hour expiry. Graph lifecycle callbacks request renewal; missed events are surfaced for manual recovery.
 
-The webhook validates `clientState` for the entire batch and checks enrollment before writing event IDs to SQLite. It acknowledges after the transaction commits. A single worker fetches the meeting metadata, verifies that the subscribed user is the organizer, fetches either transcript content or the insight, and updates the meeting entry. A SQLite activity outbox queues readiness notifications for the organizer. The same worker sends them as NoteIQ via the Graph Activity API, using the installed app's resource-specific permission; it does not post transcript or insight bodies. The tab checks for saved results every 15 seconds while visible.
+The webhook validates `clientState` for the entire batch and checks enrollment before writing event IDs to PostgreSQL. It acknowledges after the transaction commits. A worker fetches the meeting metadata, verifies that the subscribed user is the organizer, fetches either transcript content or the insight, and updates the meeting entry. A database activity outbox queues readiness notifications for the organizer. The same worker sends them as NoteIQ via the Graph Activity API, using the installed app's resource-specific permission; it does not post transcript or insight bodies. The tab checks for saved results every 15 seconds while visible.
 
-Retryable processing failures are delayed and retried up to five times. Failed jobs stay in SQLite for diagnosis. Processing resumes after a restart. New artifacts are grouped by meeting ID and deduplicated by artifact ID. Historical duplicate rows are retained. Activity event keys suppress repeated queueing, and stable chain IDs let retries update the same feed entry. There is no attendee correlation.
+Retryable processing failures are delayed and retried up to five times. Failed jobs stay in PostgreSQL for diagnosis. Processing resumes after a restart. Queue leases prevent multiple replicas from taking the same ready item. New artifacts are grouped by meeting ID and deduplicated by artifact ID. Historical duplicate rows are retained. Activity event keys suppress repeated queueing, and stable chain IDs let retries update the same feed entry. There is no attendee correlation.
 
 Raw transcripts are downloaded, stored and loaded through an authenticated endpoint when a user expands them. Copilot notes and action items are formatted without another LLM. Card content is rendered as text, without executing model-generated HTML or actions. API responses and OAuth pages have `Cache-Control: no-store`; the server does not log request URLs or meeting content.
 
 ## Storage and access
 
-The local default database is `data/noteiq.sqlite3`, excluded from version control with owner-only file permissions. The Container Apps demo overrides this with container-local `/tmp/noteiq.sqlite3`; its contents are lost when the replica is replaced. Do not put SQLite on Azure Files because its network filesystem locking can leave the application unable to start. The database contains enrolled identities, temporary sign-in records, session hashes, pending event IDs, saved meeting results, raw transcripts and an activity outbox. Use a managed database before requiring persistent deployment storage or multiple replicas.
+The local default database is `data/noteiq.sqlite3`, excluded from version control with owner-only file permissions. Container Apps uses Azure Database for PostgreSQL when `NOTEIQ_DATABASE_URL` is set. It contains enrolled identities, temporary sign-in records, session hashes, pending event IDs, saved meeting results, raw transcripts and an activity outbox. SQLite is retained only for local development and tests; it must not be placed on Azure Files.
 
 Meeting APIs always use the authenticated session's user ID. Browser-supplied user IDs cannot select another person's cards. Disconnect disables processing, revokes all that user's sessions and deletes their saved cards, transcripts, queued notifications. Previously delivered Activity entries remain in Teams. Subscription deletion follows in the worker; incoming events and in-flight saves are ignored immediately after disconnect. Signing out only revokes the current session. Removing the Teams package alone does not signal this tab-only service to disconnect; use the in-app Disconnect button first.
 
-Run exactly one server process. The SQLite queue intentionally has a single consumer. For the prototype, storage is retained until disconnect or operator removal; the UI shows the latest 100 saved cards.
+PostgreSQL supports concurrent Container App replicas. For the prototype, storage is retained until disconnect or operator removal; the UI shows the latest 100 saved cards.
 
 ## Boundaries of this version
 
