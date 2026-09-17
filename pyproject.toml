@@ -11,7 +11,7 @@ dependencies = [
     "python-dotenv>=1,<2",
     "uvicorn>=0.34,<1",
     "pydantic>=2.13.5",
-    "cryptography>=46,<47",
+    "cryptography>=50,<51",
     "psycopg[binary,pool]>=3.2,<4",
 ]
 
