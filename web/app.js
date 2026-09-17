@@ -118,7 +118,7 @@ $("#notification-retry").onclick = async () => {
 
 const statuses = {
   CONNECTING: "Connecting your meeting updates…",
-  LISTENING: "Listening for transcripts and Copilot insights. Meeting access is checked when content is fetched.",
+  LISTENING: "",
   ACCESS_REQUIRED: "Meeting access needs attention. Ask your administrator to check Copilot licensing, Graph consent and the application access policy.",
   CONNECTION_ERROR: "Unable to connect to Microsoft Graph. Check the server configuration and retry.",
   MISSED_EVENTS: "Some updates were missed while NoteIQ was offline. Your administrator can recover a meeting using its link."
@@ -131,9 +131,9 @@ function element(tag, text, className) {
   return node;
 }
 
-function renderNote(note) {
+function renderNote(note, hideTitle) {
   const line = element("span");
-  if (note.title) line.append(element("strong", note.title + ": "));
+  if (note.title && !hideTitle) line.append(element("strong", note.title + ": "));
   line.append(document.createTextNode(note.text || ""));
   if (!note.subpoints?.length) {
     const paragraph = element("p");
@@ -143,8 +143,16 @@ function renderNote(note) {
   const detail = element("details");
   const summary = element("summary");
   summary.append(line);
-  detail.append(summary, ...note.subpoints.map(renderNote));
+  detail.append(summary, ...note.subpoints.map((subpoint) => renderNote(subpoint)));
   return detail;
+}
+
+function renderCollapsibleNote(note) {
+  const wrapper = element("details", "", "note-collapsible");
+  const summary = element("summary");
+  summary.append(element("strong", note.title || (note.text || "Note").slice(0, 60)));
+  wrapper.append(summary, renderNote(note, true));
+  return wrapper;
 }
 
 function renderMeetings(meetings, clickup) {
@@ -175,7 +183,7 @@ function renderMeetings(meetings, clickup) {
           if (items?.length) {
             content.append(element("h3", heading === "KEY NOTES" ? "Meeting notes" : "Follow-up tasks"));
             for (const item of items) {
-              content.append(renderNote(item));
+              content.append(heading === "KEY NOTES" ? renderCollapsibleNote(item) : renderNote(item));
               if (heading === "ACTION ITEMS") content.append(element("p", item.ownerDisplayName || "Owner not specified", "hint"));
             }
           }
@@ -372,7 +380,9 @@ async function refresh(sync = false) {
     $("#welcome").hidden = true;
     $("#workspace").hidden = false;
     $("#greeting").textContent = `Welcome, ${user.name}`;
-    $("#status").textContent = (statuses[user.status] || user.status) + (syncMessage ? " " + syncMessage : "");
+    const statusText = ((statuses[user.status] ?? user.status) + (syncMessage ? " " + syncMessage : "")).trim();
+    $("#status").textContent = statusText;
+    $(".statusbar").hidden = !statusText;
     const notificationError = user.notifications === "DELIVERY_ERROR";
     $("#notification-status").textContent = notificationError
       ? "Teams notification delivery needs attention. Install or update NoteIQ in Teams and accept its notification permission, then retry."
