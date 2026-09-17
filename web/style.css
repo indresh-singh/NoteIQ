@@ -6,10 +6,12 @@
 
 .note-collapsible{padding:12px 0;border-bottom:1px solid var(--line)}
 .note-collapsible:last-child{border-bottom:none}
-.note-collapsible summary{cursor:pointer;font-weight:700;font-size:14px}
+.note-collapsible summary{cursor:pointer;font-weight:650;font-size:14px}
 .note-collapsible summary::marker{color:var(--accent)}
-.note-collapsible p{margin:10px 0 0;font-size:13px;font-weight:700}
-.note-collapsible details{margin:8px 0 0 18px}
+.note-collapsible p{margin:10px 0 0;font-size:13px;font-weight:400;line-height:1.65;color:var(--text)}
+.note-collapsible p strong,.note-collapsible p b{font-weight:650}
+.note-collapsible details{margin:10px 0 0 18px}
+.note-collapsible details summary{font-weight:600;font-size:13px}
 
 #clickup-settings{margin:20px 0 24px;padding:26px 28px;border:1px solid var(--line);border-radius:14px;background:var(--paper)}
 #clickup-settings h2{display:flex;align-items:center;gap:9px;font-size:16px;margin:0 0 10px;letter-spacing:-.2px}
