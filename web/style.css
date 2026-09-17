@@ -21,11 +21,12 @@
 .clickup-list-row button{font-size:12px;padding:6px 12px}
 .clickup-list-remove{color:var(--muted)}
 .clickup-list-remove:hover{color:#c0392b;border-color:#c0392b}
-#clickup-add-list{display:flex;gap:12px;align-items:end}
-#clickup-add-list label{display:grid;gap:6px;font-size:12px;color:var(--muted);flex:1;max-width:280px}
-#clickup-add-list input{padding:9px 11px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--text);font-size:13px;height:38px}
-#clickup-add-list input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+#clickup-add-list{display:flex;flex-wrap:wrap;gap:12px;align-items:end}
+#clickup-add-list label{display:grid;gap:6px;font-size:12px;color:var(--muted);flex:1;min-width:220px;max-width:360px}
+#clickup-add-list select{padding:9px 11px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--text);font-size:13px;height:38px;font:inherit}
+#clickup-add-list select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 #clickup-add-list button{height:38px;white-space:nowrap}
+#clickup-refresh-lists{color:var(--muted);background:transparent}
 #clickup-settings #clickup-disconnect{border-color:transparent;background:transparent;color:var(--muted);padding:6px 0;font-size:12px;margin-top:4px}
 #clickup-settings #clickup-disconnect:hover{color:#c0392b;border-color:transparent}
 

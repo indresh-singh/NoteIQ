@@ -53,6 +53,51 @@ class ClickUp:
             raise ValueError("ClickUp did not return a List name.")
         return name
 
+    async def available_lists(self, token: str, workspaces: list[dict]) -> list[dict]:
+        """Enumerate every List the connected account can see, for a picker.
+
+        Skips individual spaces/folders the token can't access instead of
+        failing the whole picker over one restricted space.
+        """
+        found = []
+        for workspace in workspaces:
+            try:
+                spaces = await self.request("GET", f"/team/{workspace['id']}/space", token=token)
+            except ValueError:
+                continue
+            for space in spaces.get("spaces") or []:
+                path = f"{workspace['name']} / {space.get('name', 'Space')}"
+                try:
+                    folderless = await self.request(
+                        "GET",
+                        f"/space/{space['id']}/list",
+                        token=token,
+                        params={"archived": "false"},
+                    )
+                    for item in folderless.get("lists") or []:
+                        found.append(
+                            {"id": str(item["id"]), "name": item.get("name", ""), "path": path}
+                        )
+                    folders = await self.request(
+                        "GET",
+                        f"/space/{space['id']}/folder",
+                        token=token,
+                        params={"archived": "false"},
+                    )
+                except ValueError:
+                    continue
+                for folder in folders.get("folders") or []:
+                    folder_path = f"{path} / {folder.get('name', 'Folder')}"
+                    for item in folder.get("lists") or []:
+                        found.append(
+                            {
+                                "id": str(item["id"]),
+                                "name": item.get("name", ""),
+                                "path": folder_path,
+                            }
+                        )
+        return found
+
     async def create_task(self, token: str, list_id: str, name: str, description: str) -> dict:
         return await self.request(
             "POST",

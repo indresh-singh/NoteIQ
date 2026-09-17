@@ -267,6 +267,19 @@ def create_app(
             "workspaces": connection.get("workspaces", []) if connection else [],
         }
 
+    @app.get("/api/clickup/available-lists")
+    async def clickup_available_lists(request: Request, user: dict = Depends(current_user)):
+        client = request.app.state.clickup
+        connection = request.app.state.store.clickup(user["id"])
+        if not client or not connection:
+            raise HTTPException(409, "Connect ClickUp first.")
+        try:
+            token = client.decrypt(connection["token"])
+            lists = await client.available_lists(token, connection["workspaces"])
+        except ValueError as error:
+            raise HTTPException(502, str(error)) from None
+        return {"lists": lists}
+
     @app.post("/api/clickup/connect")
     async def clickup_connect(
         body: ClickUpConnect, request: Request, user: dict = Depends(current_user)

@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NoteIQ · Meeting notes</title>
-  <link rel="stylesheet" href="/static/style.css?v=1.4.0">
+  <link rel="stylesheet" href="/static/style.css?v=1.4.1">
   <script src="/static/vendor/teams.min.js" defer></script>
   <script src="/static/vendor/adaptivecards.min.js" defer></script>
-  <script src="/static/app.js?v=1.4.0" defer></script>
+  <script src="/static/app.js?v=1.4.1" defer></script>
 </head>
 <body>
   <main>
@@ -52,8 +52,9 @@
           <div id="clickup-lists-wrap" hidden>
             <ul id="clickup-lists" class="clickup-lists"></ul>
             <form id="clickup-add-list">
-              <label>Add a ClickUp List <input id="clickup-list-id" required pattern="[A-Za-z0-9]+" maxlength="64" placeholder="List ID, for example 123456"></label>
-              <button>Add List</button>
+              <label>Add a ClickUp List <select id="clickup-list-id" required></select></label>
+              <button type="submit">Add List</button>
+              <button type="button" id="clickup-refresh-lists" title="Refresh the list of ClickUp Lists">Refresh</button>
             </form>
           </div>
           <button id="clickup-disconnect" hidden>Disconnect ClickUp</button>

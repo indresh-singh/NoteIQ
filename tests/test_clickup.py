@@ -33,6 +33,11 @@ class FakeClickUp:
             raise ValueError("ClickUp did not return a List name.")
         return names[list_id]
 
+    async def available_lists(self, token, workspaces):
+        assert token == "clickup-token"
+        assert workspaces == [{"id": "1", "name": "Demo Workspace"}]
+        return [{"id": "789", "name": "Design Reviews", "path": "Demo Workspace / Design"}]
+
     async def create_task(self, token, list_id, name, description):
         self.created.append((token, list_id, name, description))
         return {"id": str(len(self.created)), "url": "https://app.clickup.com/t/1"}
@@ -113,6 +118,10 @@ def test_clickup_oauth_list_and_task_export_are_private(client, store, signed_in
     assert status["list_id"] is None
     assert {item["list_id"] for item in status["lists"]} == {"123"}
 
+    assert client.get("/api/clickup/available-lists", headers=signed_in).json() == {
+        "lists": [{"id": "789", "name": "Design Reviews", "path": "Demo Workspace / Design"}]
+    }
+
     assert client.post("/api/clickup/disconnect", headers=signed_in, json={}).json() == {
         "status": "disconnected"
     }
@@ -124,6 +133,7 @@ def test_clickup_requires_connection(client, store, signed_in):
         client.post("/api/clickup/lists", headers=signed_in, json={"list_id": "123"}).status_code
         == 409
     )
+    assert client.get("/api/clickup/available-lists", headers=signed_in).status_code == 409
     assert client.post("/api/meetings/999/clickup", headers=signed_in, json={}).status_code == 409
 
 

@@ -249,7 +249,45 @@ function renderMeetings(meetings, clickup) {
   }
 }
 
+let availableClickUpLists = null;
+let loadingAvailableClickUpLists = false;
+
+async function ensureAvailableClickUpLists(force = false) {
+  if (loadingAvailableClickUpLists || (availableClickUpLists !== null && !force)) return;
+  loadingAvailableClickUpLists = true;
+  try {
+    availableClickUpLists = (await api("/api/clickup/available-lists")).lists;
+  } catch (error) {
+    availableClickUpLists = [];
+    showError(error.message);
+  } finally {
+    loadingAvailableClickUpLists = false;
+    renderClickUpPicker();
+  }
+}
+
+function renderClickUpPicker() {
+  const select = $("#clickup-list-id");
+  if (!select) return;
+  const addedIds = new Set((currentClickUp?.lists || []).map((item) => item.list_id));
+  const options = (availableClickUpLists || []).filter((item) => !addedIds.has(item.id));
+  select.replaceChildren();
+  select.disabled = true;
+  if (availableClickUpLists === null) {
+    select.append(new Option("Loading ClickUp Lists…", ""));
+  } else if (!options.length) {
+    select.append(new Option("No more Lists to add", ""));
+  } else {
+    select.disabled = false;
+    for (const item of options) select.append(new Option(`${item.path} / ${item.name}`, item.id));
+  }
+  $("#clickup-add-list button[type=submit]").disabled = select.disabled;
+}
+
+let currentClickUp = null;
+
 function renderClickUp(clickup) {
+  currentClickUp = clickup;
   $("#clickup-settings").hidden = !clickup.available;
   $("#clickup-shortcut").hidden = !clickup.available;
   if (!clickup.available) return;
@@ -258,7 +296,7 @@ function renderClickUp(clickup) {
   $("#clickup-connect").hidden = connected;
   $("#clickup-lists-wrap").hidden = !connected;
   $("#clickup-disconnect").hidden = !connected;
-  $("#clickup-list-id").value = "";
+  if (connected) { ensureAvailableClickUpLists(); renderClickUpPicker(); }
   $("#clickup-status").textContent = !connected
     ? "Connect your ClickUp account to send action items."
     : !lists.length
@@ -383,6 +421,12 @@ $("#clickup-add-list").onsubmit = async (event) => {
     setTimeout(() => { button.textContent = original; }, 1500);
   } catch (error) { showError(error.message); }
   finally { button.disabled = false; }
+};
+$("#clickup-refresh-lists").onclick = async () => {
+  const button = $("#clickup-refresh-lists");
+  button.disabled = true;
+  await ensureAvailableClickUpLists(true);
+  button.disabled = false;
 };
 $("#clickup-disconnect").onclick = async () => {
   try { await api("/api/clickup/disconnect", {}); await refresh(); }
