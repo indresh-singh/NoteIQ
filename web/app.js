@@ -147,7 +147,7 @@ function renderNote(note) {
   return detail;
 }
 
-function renderMeetings(meetings) {
+function renderMeetings(meetings, clickup) {
   const signature = JSON.stringify(meetings);
   if (signature === previousMeetings) return;
   previousMeetings = signature;
@@ -210,15 +210,36 @@ function renderMeetings(meetings) {
       }
     };
     buttons.append(transcriptButton);
-    const clickupButton = element("button", "Send action items to ClickUp");
+    const lists = clickup?.lists || [];
+    let picker = null;
+    if (lists.length > 1) {
+      picker = element("select", "", "clickup-list-picker");
+      picker.dataset.clickup = "true";
+      picker.dataset.hasActions = String(hasActionItems(meeting.content));
+      picker.hidden = true;
+      for (const item of lists) {
+        const option = element("option", item.list_name);
+        option.value = item.list_id;
+        option.selected = item.is_default;
+        picker.append(option);
+      }
+      buttons.append(picker);
+    }
+    const clickupButton = element("button", "", "clickup-button");
     clickupButton.dataset.clickup = "true";
     clickupButton.dataset.hasActions = String(hasActionItems(meeting.content));
     clickupButton.hidden = true;
+    const clickupIcon = document.createElement("img");
+    clickupIcon.src = "/static/clickup.svg";
+    clickupIcon.alt = "";
+    const clickupLabel = element("span", "Send action items to ClickUp");
+    clickupButton.append(clickupIcon, clickupLabel);
     clickupButton.onclick = async () => {
       clickupButton.disabled = true;
       try {
-        const result = await api(`/api/meetings/${meeting.id}/clickup`, {});
-        clickupButton.textContent = result.created ? `${result.created} task${result.created === 1 ? "" : "s"} sent` : "Already sent";
+        const body = picker ? {list_id: picker.value} : {};
+        const result = await api(`/api/meetings/${meeting.id}/clickup`, body);
+        clickupLabel.textContent = result.created ? `${result.created} task${result.created === 1 ? "" : "s"} sent` : "Already sent";
       } catch (error) { showError(error.message); clickupButton.disabled = false; }
     };
     buttons.append(clickupButton);
@@ -233,14 +254,51 @@ function renderClickUp(clickup) {
   $("#clickup-shortcut").hidden = !clickup.available;
   if (!clickup.available) return;
   const connected = clickup.connected;
+  const lists = clickup.lists || [];
   $("#clickup-connect").hidden = connected;
-  $("#clickup-list").hidden = !connected;
+  $("#clickup-lists-wrap").hidden = !connected;
   $("#clickup-disconnect").hidden = !connected;
-  $("#clickup-list-id").value = clickup.list_id || "";
-  $("#clickup-status").textContent = !connected ? "Connect your ClickUp account to send action items." :
-    clickup.list_id ? `New tasks will be created in "${clickup.list_name || clickup.list_id}".` : "Choose the ClickUp List that should receive tasks.";
-  document.querySelectorAll("button[data-clickup]").forEach((button) => {
-    button.hidden = !clickup.list_id || button.dataset.hasActions !== "true";
+  $("#clickup-list-id").value = "";
+  $("#clickup-status").textContent = !connected
+    ? "Connect your ClickUp account to send action items."
+    : !lists.length
+    ? "Add a ClickUp List below to start sending action items."
+    : clickup.list_id
+    ? `New tasks go to "${clickup.list_name}" by default.`
+    : "Choose a default ClickUp List below.";
+  const listing = $("#clickup-lists");
+  listing.replaceChildren();
+  for (const item of lists) {
+    const row = element("li", "", "clickup-list-row");
+    row.append(element("span", item.list_name, "clickup-list-name"));
+    if (item.is_default) {
+      row.append(element("span", "Default", "clickup-list-badge"));
+    } else {
+      const makeDefault = element("button", "Set default");
+      makeDefault.onclick = async () => {
+        makeDefault.disabled = true;
+        try { await api("/api/clickup/lists/default", {list_id: item.list_id}); await refresh(); }
+        catch (error) { showError(error.message); makeDefault.disabled = false; }
+      };
+      row.append(makeDefault);
+    }
+    const remove = element("button", "Remove", "clickup-list-remove");
+    remove.onclick = async () => {
+      remove.disabled = true;
+      try {
+        const response = await fetch(`/api/clickup/lists/${item.list_id}`, {
+          method: "DELETE",
+          headers: {Authorization: `Bearer ${token}`},
+        });
+        if (!response.ok) throw new Error("Couldn't remove that ClickUp List. Try again.");
+        await refresh();
+      } catch (error) { showError(error.message); remove.disabled = false; }
+    };
+    row.append(remove);
+    listing.append(row);
+  }
+  document.querySelectorAll("[data-clickup]").forEach((field) => {
+    field.hidden = !lists.length || field.dataset.hasActions !== "true";
   });
 }
 
@@ -283,7 +341,7 @@ async function refresh(sync = false) {
       : "NoteIQ will notify you in Teams Activity when transcripts and insights are ready.";
     $("#notification-retry").hidden = !notificationError;
     $("#retry").hidden = !["ACCESS_REQUIRED", "CONNECTION_ERROR"].includes(user.status);
-    renderMeetings(meetings);
+    renderMeetings(meetings, clickup);
     renderClickUp(clickup);
     showError();
   } catch (error) { showError(error.message); }
@@ -312,15 +370,16 @@ $("#clickup-connect").onclick = async () => {
     await refresh();
   } catch (error) { if (popup) popup.close(); showError(error.message); }
 };
-$("#clickup-list").onsubmit = async (event) => {
+$("#clickup-add-list").onsubmit = async (event) => {
   event.preventDefault();
   const button = event.submitter;
   const original = button.textContent;
   button.disabled = true;
   try {
-    await api("/api/clickup/list", {list_id: $("#clickup-list-id").value});
+    await api("/api/clickup/lists", {list_id: $("#clickup-list-id").value});
+    $("#clickup-list-id").value = "";
     await refresh();
-    button.textContent = "Saved";
+    button.textContent = "Added";
     setTimeout(() => { button.textContent = original; }, 1500);
   } catch (error) { showError(error.message); }
   finally { button.disabled = false; }

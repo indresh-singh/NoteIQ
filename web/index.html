@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NoteIQ · Meeting notes</title>
-  <link rel="stylesheet" href="/static/style.css?v=1.3.5">
+  <link rel="stylesheet" href="/static/style.css?v=1.4.0">
   <script src="/static/vendor/teams.min.js" defer></script>
   <script src="/static/vendor/adaptivecards.min.js" defer></script>
-  <script src="/static/app.js?v=1.3.8" defer></script>
+  <script src="/static/app.js?v=1.4.0" defer></script>
 </head>
 <body>
   <main>
@@ -46,13 +46,16 @@
       </div>
       <details class="account"><summary>Account settings</summary>
         <section id="clickup-settings" hidden>
-          <h2>ClickUp</h2>
+          <h2><img src="/static/clickup.svg" alt="" class="clickup-icon">ClickUp</h2>
           <p id="clickup-status">Send Copilot action items to a ClickUp List.</p>
-          <button id="clickup-connect">Connect ClickUp</button>
-          <form id="clickup-list" hidden>
-            <label>Default ClickUp List ID <input id="clickup-list-id" required pattern="[A-Za-z0-9]+" maxlength="64" placeholder="For example: 123456"></label>
-            <button>Save List</button>
-          </form>
+          <button id="clickup-connect"><img src="/static/clickup.svg" alt="">Connect ClickUp</button>
+          <div id="clickup-lists-wrap" hidden>
+            <ul id="clickup-lists" class="clickup-lists"></ul>
+            <form id="clickup-add-list">
+              <label>Add a ClickUp List <input id="clickup-list-id" required pattern="[A-Za-z0-9]+" maxlength="64" placeholder="List ID, for example 123456"></label>
+              <button>Add List</button>
+            </form>
+          </div>
           <button id="clickup-disconnect" hidden>Disconnect ClickUp</button>
         </section>
         <p>Disconnect to stop collection and messages, and delete your saved NoteIQ cards and transcripts. Your original Teams content stays in Microsoft 365.</p>

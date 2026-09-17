@@ -41,6 +41,10 @@ class ClickUpList(BaseModel):
     list_id: str = Field(pattern=r"^[A-Za-z0-9]+$", max_length=64)
 
 
+class ClickUpExport(BaseModel):
+    list_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9]+$", max_length=64)
+
+
 class ClickUpConnect(BaseModel):
     in_teams: bool = False
 
@@ -121,7 +125,7 @@ def create_app(
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
-        if request.url.path.startswith("/api/") and request.method == "POST":
+        if request.url.path.startswith("/api/") and request.method in ("POST", "DELETE"):
             origin = request.headers.get("origin")
             if origin and origin != request.app.state.config.public_url:
                 return PlainTextResponse("Invalid origin", status_code=403)
@@ -252,11 +256,14 @@ def create_app(
     @app.get("/api/clickup")
     async def clickup_status(request: Request, user: dict = Depends(current_user)):
         connection = request.app.state.store.clickup(user["id"])
+        default_id = connection.get("list_id") if connection else None
+        lists = request.app.state.store.clickup_lists(user["id"]) if connection else []
         return {
             "available": request.app.state.clickup is not None,
             "connected": bool(connection),
-            "list_id": connection.get("list_id") if connection else None,
+            "list_id": default_id,
             "list_name": connection.get("list_name") if connection else None,
+            "lists": [{**item, "is_default": item["list_id"] == default_id} for item in lists],
             "workspaces": connection.get("workspaces", []) if connection else [],
         }
 
@@ -307,10 +314,13 @@ def create_app(
             return clickup_result(str(error), in_teams)
         return clickup_result(in_teams=in_teams)
 
-    @app.post("/api/clickup/list")
-    async def clickup_list(body: ClickUpList, request: Request, user: dict = Depends(current_user)):
+    @app.post("/api/clickup/lists")
+    async def clickup_add_list(
+        body: ClickUpList, request: Request, user: dict = Depends(current_user)
+    ):
         client = request.app.state.clickup
-        connection = request.app.state.store.clickup(user["id"])
+        store = request.app.state.store
+        connection = store.clickup(user["id"])
         if not client or not connection:
             raise HTTPException(409, "Connect ClickUp first.")
         try:
@@ -323,25 +333,57 @@ def create_app(
             raise HTTPException(
                 400, "That ClickUp List couldn't be found. Check the List ID."
             ) from None
-        request.app.state.store.set_clickup_list(user["id"], body.list_id, name)
+        store.add_clickup_list(user["id"], body.list_id, name)
+        if not connection.get("list_id"):
+            store.set_clickup_list(user["id"], body.list_id, name)
         return {"list_id": body.list_id, "list_name": name}
+
+    @app.post("/api/clickup/lists/default")
+    async def clickup_default_list(
+        body: ClickUpList, request: Request, user: dict = Depends(current_user)
+    ):
+        store = request.app.state.store
+        lists = {item["list_id"]: item["list_name"] for item in store.clickup_lists(user["id"])}
+        if body.list_id not in lists:
+            raise HTTPException(404, "Add this ClickUp List before setting it as default.")
+        store.set_clickup_list(user["id"], body.list_id, lists[body.list_id])
+        return {"list_id": body.list_id, "list_name": lists[body.list_id]}
+
+    @app.delete("/api/clickup/lists/{list_id}")
+    async def clickup_remove_list(
+        list_id: str, request: Request, user: dict = Depends(current_user)
+    ):
+        request.app.state.store.remove_clickup_list(user["id"], list_id)
+        return {"status": "removed"}
 
     @app.post("/api/clickup/disconnect")
     async def clickup_disconnect(request: Request, user: dict = Depends(current_user)):
         with request.app.state.store.connect() as db:
             db.execute("DELETE FROM clickup_connections WHERE user_id=?", (user["id"],))
+            db.execute("DELETE FROM clickup_lists WHERE user_id=?", (user["id"],))
             db.execute("DELETE FROM clickup_tasks WHERE user_id=?", (user["id"],))
         return {"status": "disconnected"}
 
     @app.post("/api/meetings/{meeting_id}/clickup")
-    async def export_clickup(meeting_id: int, request: Request, user: dict = Depends(current_user)):
+    async def export_clickup(
+        meeting_id: int,
+        body: ClickUpExport,
+        request: Request,
+        user: dict = Depends(current_user),
+    ):
         client = request.app.state.clickup
-        connection = request.app.state.store.clickup(user["id"])
-        meeting = request.app.state.store.meeting(user["id"], meeting_id)
+        store = request.app.state.store
+        connection = store.clickup(user["id"])
+        meeting = store.meeting(user["id"], meeting_id)
         if not client or not connection:
             raise HTTPException(409, "Connect ClickUp first.")
-        if not connection.get("list_id"):
+        list_id = body.list_id or connection.get("list_id")
+        if not list_id:
             raise HTTPException(409, "Choose a ClickUp List first.")
+        if body.list_id and body.list_id not in {
+            item["list_id"] for item in store.clickup_lists(user["id"])
+        }:
+            raise HTTPException(400, "Unknown ClickUp List. Add it in Account settings first.")
         if not meeting:
             raise HTTPException(404, "Meeting not found.")
         try:
@@ -350,6 +392,7 @@ def create_app(
             for action in actions(meeting["content"]):
                 raw = "|".join(
                     (
+                        list_id,
                         meeting["content"].get("meeting_id") or "",
                         action.get("title") or "",
                         action.get("text") or "",
@@ -357,7 +400,7 @@ def create_app(
                     )
                 )
                 action_key = hashlib.sha256(raw.encode()).hexdigest()
-                if request.app.state.store.clickup_task(user["id"], action_key):
+                if store.clickup_task(user["id"], action_key):
                     skipped += 1
                     continue
                 name = action.get("title") or action.get("text")
@@ -365,11 +408,11 @@ def create_app(
                 owner = action.get("ownerDisplayName") or "Owner not specified"
                 task = await client.create_task(
                     token,
-                    connection["list_id"],
+                    list_id,
                     name,
                     f"{detail}\n\n**Owner:** {owner}\n\n_Source: NoteIQ — {meeting['subject']}_",
                 )
-                request.app.state.store.save_clickup_task(user["id"], action_key, task)
+                store.save_clickup_task(user["id"], action_key, task)
                 created += 1
         except ValueError as error:
             raise HTTPException(502, str(error)) from None

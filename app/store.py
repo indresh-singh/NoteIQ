@@ -129,6 +129,10 @@ class Store:
                 CREATE TABLE IF NOT EXISTS clickup_connections (
                     user_id TEXT PRIMARY KEY, token TEXT NOT NULL, list_id TEXT, workspaces TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS clickup_lists (
+                    user_id TEXT NOT NULL, list_id TEXT NOT NULL, list_name TEXT NOT NULL,
+                    PRIMARY KEY (user_id, list_id)
+                );
                 CREATE TABLE IF NOT EXISTS clickup_tasks (
                     user_id TEXT NOT NULL, action_key TEXT NOT NULL, task_id TEXT NOT NULL,
                     task_url TEXT, PRIMARY KEY (user_id, action_key)
@@ -172,6 +176,9 @@ class Store:
             """CREATE TABLE IF NOT EXISTS clickup_connections (
                 user_id TEXT PRIMARY KEY, token TEXT NOT NULL, list_id TEXT, workspaces TEXT NOT NULL)""",
             "ALTER TABLE clickup_connections ADD COLUMN IF NOT EXISTS list_name TEXT",
+            """CREATE TABLE IF NOT EXISTS clickup_lists (
+                user_id TEXT NOT NULL, list_id TEXT NOT NULL, list_name TEXT NOT NULL,
+                PRIMARY KEY (user_id, list_id))""",
             """CREATE TABLE IF NOT EXISTS clickup_tasks (
                 user_id TEXT NOT NULL, action_key TEXT NOT NULL, task_id TEXT NOT NULL,
                 task_url TEXT, PRIMARY KEY (user_id, action_key))""",
@@ -335,6 +342,7 @@ class Store:
             db.execute("DELETE FROM transcripts WHERE user_id=?", (user_id,))
             db.execute("DELETE FROM activity_outbox WHERE user_id=?", (user_id,))
             db.execute("DELETE FROM clickup_connections WHERE user_id=?", (user_id,))
+            db.execute("DELETE FROM clickup_lists WHERE user_id=?", (user_id,))
             db.execute("DELETE FROM clickup_tasks WHERE user_id=?", (user_id,))
 
     def save_clickup(self, user_id: str, token: str, workspaces: list[dict]):
@@ -361,6 +369,36 @@ class Store:
             db.execute(
                 "UPDATE clickup_connections SET list_id=?, list_name=? WHERE user_id=?",
                 (list_id, list_name, user_id),
+            )
+
+    def add_clickup_list(self, user_id: str, list_id: str, list_name: str):
+        with self.connect() as db:
+            db.execute(
+                """INSERT INTO clickup_lists(user_id, list_id, list_name) VALUES (?, ?, ?)
+                ON CONFLICT(user_id, list_id) DO UPDATE SET list_name=excluded.list_name""",
+                (user_id, list_id, list_name),
+            )
+
+    def clickup_lists(self, user_id: str) -> list[dict]:
+        with self.connect() as db:
+            return [
+                dict(row)
+                for row in db.execute(
+                    "SELECT list_id, list_name FROM clickup_lists WHERE user_id=? "
+                    "ORDER BY list_name",
+                    (user_id,),
+                ).fetchall()
+            ]
+
+    def remove_clickup_list(self, user_id: str, list_id: str):
+        with self.connect() as db:
+            db.execute(
+                "DELETE FROM clickup_lists WHERE user_id=? AND list_id=?", (user_id, list_id)
+            )
+            db.execute(
+                "UPDATE clickup_connections SET list_id=NULL, list_name=NULL "
+                "WHERE user_id=? AND list_id=?",
+                (user_id, list_id),
             )
 
     def clickup_task(self, user_id: str, action_key: str) -> bool:
