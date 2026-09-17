@@ -401,20 +401,49 @@ class Store:
                 (user_id, list_id),
             )
 
-    def clickup_task(self, user_id: str, action_key: str) -> bool:
+    def reserve_clickup_task(self, user_id: str, action_key: str) -> bool:
+        """Atomically claim an action item before calling the ClickUp API.
+
+        The check-then-act window between "was this already sent?" and the
+        network call to create the task is otherwise wide enough for
+        concurrent export requests to both pass the check and both create a
+        duplicate task in the user's ClickUp workspace. Reserving the row
+        first, inside a single statement, closes that window: only one
+        concurrent caller can win the insert. Returns True if this call
+        claimed it and should proceed to create the task; False if another
+        call already claimed (or completed) it.
+        """
         with self.connect() as db:
-            return bool(
-                db.execute(
-                    "SELECT 1 FROM clickup_tasks WHERE user_id=? AND action_key=?",
+            if self.database_url:
+                # ON CONFLICT must precede RETURNING; the generic "INSERT OR IGNORE"
+                # translation appends ON CONFLICT at the end, which is invalid here.
+                row = db.execute(
+                    "INSERT INTO clickup_tasks(user_id, action_key, task_id) VALUES (?, ?, '') "
+                    "ON CONFLICT DO NOTHING RETURNING 1",
                     (user_id, action_key),
                 ).fetchone()
+            else:
+                row = db.execute(
+                    "INSERT OR IGNORE INTO clickup_tasks(user_id, action_key, task_id) "
+                    "VALUES (?, ?, '') RETURNING 1",
+                    (user_id, action_key),
+                ).fetchone()
+        return row is not None
+
+    def release_clickup_task(self, user_id: str, action_key: str):
+        """Undo a reservation whose ClickUp API call failed, so a retry isn't
+        permanently skipped as "already sent"."""
+        with self.connect() as db:
+            db.execute(
+                "DELETE FROM clickup_tasks WHERE user_id=? AND action_key=? AND task_id=''",
+                (user_id, action_key),
             )
 
     def save_clickup_task(self, user_id: str, action_key: str, task: dict):
         with self.connect() as db:
             db.execute(
-                "INSERT OR IGNORE INTO clickup_tasks VALUES (?, ?, ?, ?)",
-                (user_id, action_key, str(task["id"]), task.get("url")),
+                "UPDATE clickup_tasks SET task_id=?, task_url=? WHERE user_id=? AND action_key=?",
+                (str(task["id"]), task.get("url"), user_id, action_key),
             )
 
     def enqueue(self, payloads: list[str]):

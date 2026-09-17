@@ -19,9 +19,10 @@ from app.auth import identity_client
 from app.clickup import ClickUp
 from app.config import ROOT, Settings, settings
 from app.graph_client import GraphClient
-from app.models import parse_event
+from app.models import UserSync, parse_event
 from app.notifications import validate_notifications
 from app.store import Store, digest
+from app.subscriptions import resource_owner
 from app.worker import run_worker
 
 log = logging.getLogger(__name__)
@@ -413,18 +414,25 @@ def create_app(
                     )
                 )
                 action_key = hashlib.sha256(raw.encode()).hexdigest()
-                if store.clickup_task(user["id"], action_key):
+                # Reserve the row before calling ClickUp: this is a single atomic
+                # statement, so concurrent exports of the same action item can't
+                # both pass the "already sent?" check and both create a task.
+                if not store.reserve_clickup_task(user["id"], action_key):
                     skipped += 1
                     continue
                 name = action.get("title") or action.get("text")
                 detail = action.get("text") or ""
                 owner = action.get("ownerDisplayName") or "Owner not specified"
-                task = await client.create_task(
-                    token,
-                    list_id,
-                    name,
-                    f"{detail}\n\n**Owner:** {owner}\n\n_Source: NoteIQ — {meeting['subject']}_",
-                )
+                try:
+                    task = await client.create_task(
+                        token,
+                        list_id,
+                        name,
+                        f"{detail}\n\n**Owner:** {owner}\n\n_Source: NoteIQ — {meeting['subject']}_",
+                    )
+                except Exception:
+                    store.release_clickup_task(user["id"], action_key)
+                    raise
                 store.save_clickup_task(user["id"], action_key, task)
                 created += 1
         except ValueError as error:
@@ -449,7 +457,8 @@ def create_app(
     async def sync(request: Request, user: dict = Depends(current_user)):
         from app.sync import queue_sync
 
-        return {"queued": queue_sync(request.app.state.store, user["id"])}
+        request.app.state.repair.set()
+        return {"queued": queue_sync(request.app.state.store, user["id"], discover=True)}
 
     @app.post("/api/recover-meeting")
     async def recover_meeting(
@@ -504,10 +513,23 @@ def create_app(
         if lifecycle:
             if messages:
                 request.app.state.repair.set()
-            if "missed" in messages:
-                for user_id in request.app.state.store.users():
-                    request.app.state.store.status(user_id, "MISSED_EVENTS")
-                log.warning("Missed Graph events; use the recovery command for affected meetings")
+            missed = [resource for event, resource in messages if event == "missed"]
+            if missed:
+                store = request.app.state.store
+                enrolled = set(store.users())
+                affected = {resource_owner(resource) for resource in missed}
+                affected.discard(None)
+                affected &= enrolled
+                # A missed event without a resolvable resource/user still needs a
+                # reaction; fall back to treating every enrolled user as affected
+                # rather than silently doing nothing.
+                for user_id in affected or enrolled:
+                    store.status(user_id, "MISSED_EVENTS")
+                    store.enqueue([UserSync(user_id=user_id).model_dump_json()])
+                log.warning(
+                    "Missed Graph events; queued discovery for user_count=%s",
+                    len(affected or enrolled),
+                )
         else:
             users = set(request.app.state.store.users())
             accepted = [

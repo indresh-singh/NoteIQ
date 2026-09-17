@@ -6,7 +6,7 @@ import httpx
 
 from app.activity import TRANSCRIPT_READY, queue_notification
 from app.graph_client import GraphClient, retryable
-from app.models import TranscriptEvent
+from app.models import MeetingSync, TranscriptEvent
 from app.store import Store
 
 log = logging.getLogger(__name__)
@@ -64,6 +64,7 @@ async def process_transcript(event: TranscriptEvent, graph: GraphClient, store: 
                 },
             },
         )
+        store.enqueue([MeetingSync(user_id=user_id, meeting_id=event.meeting_id).model_dump_json()])
         queue_notification(
             store,
             user_id,

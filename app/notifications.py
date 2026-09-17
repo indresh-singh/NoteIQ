@@ -4,7 +4,8 @@ from app.config import Settings
 from app.models import InsightEvent, TranscriptEvent
 
 
-def validate_notifications(payload: object, config: Settings, lifecycle: bool = False) -> list[str]:
+def validate_notifications(payload: object, config: Settings, lifecycle: bool = False) -> list:
+    """Returns event JSON strings normally, or (lifecycleEvent, resource) pairs when lifecycle=True."""
     if not isinstance(payload, dict) or not isinstance(payload.get("value"), list):
         raise ValueError("Expected a notification collection")
     messages = []
@@ -25,7 +26,7 @@ def validate_notifications(payload: object, config: Settings, lifecycle: bool = 
                 "subscriptionRemoved",
                 "missed",
             }:
-                messages.append(item["lifecycleEvent"])
+                messages.append((item["lifecycleEvent"], item.get("resource", "")))
         elif item.get("changeType") == "created":
             resource = item.get("resource", "")
             if not isinstance(resource, str):

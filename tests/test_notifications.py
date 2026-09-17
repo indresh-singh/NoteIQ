@@ -2,8 +2,9 @@ import json
 
 import pytest
 
-from app.models import InsightEvent
+from app.models import InsightEvent, UserSync, parse_event
 from app.worker import run_job
+from tests.conftest import USER
 
 
 def test_validation_token_is_plain_text_and_not_queued(client):
@@ -78,6 +79,35 @@ def test_lifecycle_schedules_repair(client, samples):
     samples["notification"]["value"][0]["lifecycleEvent"] = "reauthorizationRequired"
     assert client.post("/api/graph/lifecycle", json=samples["notification"]).status_code == 202
     assert client.app.state.repair.is_set()
+
+
+def test_missed_event_queues_discovery_for_the_affected_user_only(client, store, samples):
+    other = "22222222-2222-2222-2222-222222222222"
+    store.enroll(other, "Someone else")
+    samples["notification"]["value"][0]["lifecycleEvent"] = "missed"
+    samples["notification"]["value"][0]["resource"] = (
+        f"users/{USER}/onlineMeetings/getAllTranscripts"
+    )
+    assert client.post("/api/graph/lifecycle", json=samples["notification"]).status_code == 202
+    assert store.user(USER)["status"] == "MISSED_EVENTS"
+    assert store.user(other)["status"] != "MISSED_EVENTS"
+    job = parse_event(store.next_job()["payload"])
+    assert isinstance(job, UserSync)
+    assert str(job.user_id) == USER
+    with store.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 1
+
+
+def test_missed_event_without_a_resolvable_resource_falls_back_to_everyone(client, store, samples):
+    other = "22222222-2222-2222-2222-222222222222"
+    store.enroll(other, "Someone else")
+    samples["notification"]["value"][0]["lifecycleEvent"] = "missed"
+    samples["notification"]["value"][0]["resource"] = ""
+    assert client.post("/api/graph/lifecycle", json=samples["notification"]).status_code == 202
+    assert store.user(USER)["status"] == "MISSED_EVENTS"
+    assert store.user(other)["status"] == "MISSED_EVENTS"
+    with store.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 2
 
 
 async def test_job_survives_restart_and_retries(store, graph, samples, config):

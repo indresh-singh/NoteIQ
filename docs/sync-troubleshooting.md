@@ -4,15 +4,19 @@ NoteIQ uses Microsoft's Copilot insights, without generating a replacement summa
 Summary topics keep their original text and expandable subpoints.
 
 - Graph notifications queue new transcripts and insights automatically.
-- Saving an insight also queues a check for its meeting's missing transcript.
-- Every five minutes, NoteIQ checks the ten most recently updated meetings from
-  the last 24 hours for missing transcripts and insights.
-- **Refresh** queues that same check for the signed-in user. It runs in the
+- Saving a transcript or insight also queues a check for the other artifact.
+- Every five minutes, NoteIQ discovers transcripts for meetings organized by each
+  enrolled user in the last seven days using Graph `getAllTranscripts`. This
+  recovers meetings that never reached NoteIQ through a webhook. It uses the
+  existing `OnlineMeetingTranscript.Read.All` application permission.
+- Saved meetings updated in the last seven days are also checked for missing artifacts.
+- **Refresh** queues both checks for the signed-in user and requests subscription repair. It runs in the
   background; the open page reloads results every 15 seconds and on returning to
   the tab. It does not trigger Copilot generation.
-- These fallback checks cover meetings already known to NoteIQ. If neither
-  notification arrived, use `scripts.recover` with the meeting link. Subscription
-  setup must succeed before the meeting starts for dependable transcript events.
+- For meetings older than seven days, use **Check meeting** with the meeting link
+  or `scripts.recover`. Only organizer meetings are supported; Graph's discovery
+  endpoint does not support channel meetings. See Microsoft's
+  [getAllTranscripts documentation](https://learn.microsoft.com/en-us/graph/api/onlinemeeting-getalltranscripts?view=graph-rest-1.0).
 
 Teams and a browser have separate sign-in sessions. Connect with the organizer's
 account in Teams. NoteIQ checks the Teams account against its authenticated session
@@ -26,6 +30,6 @@ for Praveen, but Microsoft's insight subscription endpoint rejected Indresh with
 “does not have a valid Copilot license.” Fix that user's license before retrying
 the connection. This error does not prevent other users receiving content.
 
-The demo still uses temporary container-local SQLite. A replacement replica loses
-its database unless restored. Use a managed database before relying on durable
-enrollment or scaling; do not run SQLite directly on the Azure Files share.
+Configure `NOTEIQ_DATABASE_URL` for persistent PostgreSQL storage. Without it,
+NoteIQ falls back to SQLite; container-local data can be lost on replacement.
+Do not run SQLite directly on the Azure Files share.

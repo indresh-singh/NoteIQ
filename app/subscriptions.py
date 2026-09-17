@@ -51,17 +51,24 @@ async def ensure_subscription(graph, active, resource, config, force):
     )
 
 
+def resource_owner(resource: str) -> str | None:
+    """Extract the user id a subscription resource belongs to, or None."""
+    resource = resource.lstrip("/")
+    match = re.fullmatch(
+        r"copilot/users/([^/]+)/onlineMeetings/getAllAiInsights", resource
+    ) or re.fullmatch(r"users/([^/]+)/onlineMeetings/getAllTranscripts", resource)
+    return match[1] if match else None
+
+
 async def renew_subscriptions(graph: GraphClient, store: Store, force: bool = False) -> None:
     config = settings()
     active = await graph.list("/subscriptions")
     users = set(store.users())
     for item in active:
-        resource = item.get("resource", "").lstrip("/")
-        owner = re.fullmatch(r"copilot/users/([^/]+)/onlineMeetings/getAllAiInsights", resource)
-        owner = owner or re.fullmatch(r"users/([^/]+)/onlineMeetings/getAllTranscripts", resource)
+        owner = resource_owner(item.get("resource", ""))
         if (
             owner
-            and owner[1] not in users
+            and owner not in users
             and item.get("notificationUrl") == config.public_url + "/api/graph/notifications"
         ):
             try:

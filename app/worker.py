@@ -5,10 +5,10 @@ import time
 from app.activity import send_next_notification
 from app.graph_client import GraphClient
 from app.insights import process_insight
-from app.models import MeetingSync, TranscriptEvent, parse_event
+from app.models import MeetingSync, TranscriptEvent, UserSync, parse_event
 from app.store import Store
 from app.subscriptions import renew_subscriptions
-from app.sync import queue_sync, sync_meeting
+from app.sync import discover_meetings, queue_sync, sync_meeting
 from app.transcripts import process_transcript
 
 log = logging.getLogger(__name__)
@@ -23,6 +23,8 @@ async def run_job(store: Store, graph: GraphClient) -> bool:
         process = process_transcript if isinstance(event, TranscriptEvent) else process_insight
         if isinstance(event, MeetingSync):
             process = sync_meeting
+        elif isinstance(event, UserSync):
+            process = discover_meetings
         status = await process(event, graph, store)
         store.finish_job(job["id"], status)
         log.info("Job id=%s type=%s result=%s", job["id"], type(event).__name__, status)
@@ -39,7 +41,7 @@ async def run_worker(store: Store, graph: GraphClient, repair: asyncio.Event):
         if time.monotonic() >= next_sync:
             next_sync = time.monotonic() + 300
             for user_id in store.users():
-                queue_sync(store, user_id)
+                queue_sync(store, user_id, discover=True)
         if repair.is_set() or time.monotonic() >= next_renewal:
             force = repair.is_set()
             repair.clear()

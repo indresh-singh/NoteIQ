@@ -1,5 +1,6 @@
 import re
 from datetime import datetime
+from typing import Literal
 from urllib.parse import quote, unquote
 from uuid import UUID
 
@@ -86,10 +87,17 @@ class MeetingSync(BaseModel):
     meeting_id: str = Field(min_length=1)
 
 
-def parse_event(payload: str) -> InsightEvent | TranscriptEvent | MeetingSync:
+class UserSync(BaseModel):
+    type: Literal["user_sync"] = "user_sync"
+    user_id: UUID
+
+
+def parse_event(payload: str) -> InsightEvent | TranscriptEvent | MeetingSync | UserSync:
     import json
 
     data = json.loads(payload)
+    if data.get("type") == "user_sync":
+        return UserSync.model_validate(data)
     model = (
         TranscriptEvent
         if "transcript_id" in data

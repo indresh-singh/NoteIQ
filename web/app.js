@@ -361,8 +361,8 @@ async function refresh(sync = false) {
     if (sync) {
       const result = await api("/api/sync", {});
       syncMessage = result.queued
-        ? "Microsoft 365 check queued. Results update automatically as the check completes."
-        : "No saved meeting follow-ups to check yet. Paste a Teams meeting link below to recover one.";
+        ? "Checking meetings you organized in the last seven days. Results update automatically."
+        : "No meeting checks were queued. Please try again.";
     }
     const [meetings, clickup] = await Promise.all([api("/api/meetings"), api("/api/clickup")]);
     const clickupSignature = JSON.stringify(clickup);

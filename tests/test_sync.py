@@ -3,8 +3,8 @@ import json
 import pytest
 
 from app.insights import process_insight
-from app.models import InsightEvent, MeetingSync
-from app.sync import recover_from_link, sync_meeting
+from app.models import InsightEvent, MeetingSync, UserSync, parse_event
+from app.sync import discover_meetings, recover_from_link, sync_meeting
 from tests.conftest import USER
 
 
@@ -50,11 +50,12 @@ def test_refresh_requires_auth_and_queues_only_own_meetings(client, store, signe
     store.save_meeting(other, "Other", {"meeting_id": "private"})
     store.save_meeting(USER, "Mine", {"meeting_id": "mine"})
     assert client.post("/api/sync", json={}).status_code == 401
-    assert client.post("/api/sync", headers=signed_in, json={}).json() == {"queued": 1}
+    assert client.post("/api/sync", headers=signed_in, json={}).json() == {"queued": 2}
     with store.connect() as db:
         rows = db.execute("SELECT payload FROM jobs").fetchall()
-    assert len(rows) == 1
+    assert len(rows) == 2
     assert json.loads(rows[0][0])["meeting_id"] == "mine"
+    assert isinstance(parse_event(rows[1][0]), UserSync)
 
 
 async def test_recovery_uses_the_user_meeting_link(store, graph):
@@ -64,3 +65,40 @@ async def test_recovery_uses_the_user_meeting_link(store, graph):
     )
     assert result == {"found": 1, "queued": 1}
     assert store.meetings(USER)[0]["subject"] == "Recovered"
+
+
+def test_refresh_discovers_when_no_meetings_are_saved(client, store, signed_in):
+    assert client.post("/api/sync", headers=signed_in, json={}).json() == {"queued": 1}
+    assert isinstance(parse_event(store.next_job()["payload"]), UserSync)
+    assert client.app.state.repair.is_set()
+
+
+async def test_discovery_recovers_unknown_meeting_and_deduplicates(store, graph):
+    graph.list.return_value = [{"id": "t", "meetingId": "new-meeting"}]
+    event = UserSync(user_id=USER)
+    assert await discover_meetings(event, graph, store) == "DISCOVERED"
+    assert await discover_meetings(event, graph, store) == "DISCOVERED"
+    job = parse_event(store.next_job()["payload"])
+    assert job.meeting_id == "new-meeting"
+    assert job.transcript_id == "t"
+    path = graph.list.call_args.args[0]
+    assert f"meetingOrganizerUserId='{USER}'" in path
+    assert "startDateTime=" in path and "endDateTime=" in path
+    with store.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 1
+
+
+async def test_discovery_skips_saved_and_other_organizers(store, graph):
+    store.save_meeting(USER, "Saved", {"meeting_id": "m", "transcript": {"id": "t"}})
+    graph.list.return_value = [
+        {"id": "t", "meetingId": "m"},
+        {"id": "other", "meetingId": "private", "meetingOrganizer": {"user": {"id": "other"}}},
+    ]
+    await discover_meetings(UserSync(user_id=USER), graph, store)
+    assert store.next_job() is None
+
+
+async def test_discovery_does_not_query_for_unenrolled_user(store, graph):
+    event = UserSync(user_id="99999999-9999-9999-9999-999999999999")
+    assert await discover_meetings(event, graph, store) == "SKIPPED_NOT_ENROLLED"
+    graph.list.assert_not_called()
