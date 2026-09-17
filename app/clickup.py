@@ -46,6 +46,13 @@ class ClickUp:
             if item.get("id") is not None
         ]
 
+    async def list_name(self, token: str, list_id: str) -> str:
+        result = await self.request("GET", f"/list/{list_id}", token=token)
+        name = result.get("name")
+        if not isinstance(name, str) or not name:
+            raise ValueError("ClickUp did not return a List name.")
+        return name
+
     async def create_task(self, token: str, list_id: str, name: str, description: str) -> dict:
         return await self.request(
             "POST",

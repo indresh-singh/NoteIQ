@@ -26,6 +26,12 @@ class FakeClickUp:
         assert token == "clickup-token"
         return [{"id": "1", "name": "Demo Workspace"}]
 
+    async def list_name(self, token, list_id):
+        assert token == "clickup-token"
+        if list_id != "123":
+            raise ValueError("ClickUp did not return a List name.")
+        return "Sprint Backlog"
+
     async def create_task(self, token, list_id, name, description):
         self.created.append((token, list_id, name, description))
         return {"id": str(len(self.created)), "url": "https://app.clickup.com/t/1"}
@@ -52,9 +58,13 @@ def test_clickup_oauth_list_and_task_export_are_private(client, store, signed_in
     fake = connect(client, store, signed_in)
     assert client.get("/api/clickup", headers=signed_in).json()["connected"] is True
     assert (
-        client.post("/api/clickup/list", headers=signed_in, json={"list_id": "123"}).status_code
-        == 200
+        client.post("/api/clickup/list", headers=signed_in, json={"list_id": "999"}).status_code
+        == 400
     )
+    response = client.post("/api/clickup/list", headers=signed_in, json={"list_id": "123"})
+    assert response.status_code == 200
+    assert response.json() == {"list_id": "123", "list_name": "Sprint Backlog"}
+    assert client.get("/api/clickup", headers=signed_in).json()["list_name"] == "Sprint Backlog"
     store.save_meeting(USER, "Budget", {"meeting_id": "meeting", "insight": samples["insight"]})
     meeting_id = store.meetings(USER)[0]["id"]
     response = client.post(f"/api/meetings/{meeting_id}/clickup", headers=signed_in, json={})

@@ -66,6 +66,7 @@ class PostgresConnection:
         cursor.executemany(self.sql(statement), parameters)
         return PostgresCursor(cursor)
 
+
 def digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
@@ -136,6 +137,9 @@ class Store:
                 DROP TABLE IF EXISTS chat_connections;
                 DROP TABLE IF EXISTS outbox;
             """)
+            # SQLite has no ADD COLUMN IF NOT EXISTS; older databases lack this column.
+            with suppress(sqlite3.OperationalError):
+                db.execute("ALTER TABLE clickup_connections ADD COLUMN list_name TEXT")
         # Some managed volume drivers set permissions at mount time and do not implement chmod.
         with suppress(OSError):
             path.chmod(0o600)
@@ -167,6 +171,7 @@ class Store:
                 due DOUBLE PRECISION NOT NULL, UNIQUE(user_id, event_key))""",
             """CREATE TABLE IF NOT EXISTS clickup_connections (
                 user_id TEXT PRIMARY KEY, token TEXT NOT NULL, list_id TEXT, workspaces TEXT NOT NULL)""",
+            "ALTER TABLE clickup_connections ADD COLUMN IF NOT EXISTS list_name TEXT",
             """CREATE TABLE IF NOT EXISTS clickup_tasks (
                 user_id TEXT NOT NULL, action_key TEXT NOT NULL, task_id TEXT NOT NULL,
                 task_url TEXT, PRIMARY KEY (user_id, action_key))""",
@@ -351,10 +356,11 @@ class Store:
         result["workspaces"] = json.loads(result["workspaces"])
         return result
 
-    def set_clickup_list(self, user_id: str, list_id: str):
+    def set_clickup_list(self, user_id: str, list_id: str, list_name: str):
         with self.connect() as db:
             db.execute(
-                "UPDATE clickup_connections SET list_id=? WHERE user_id=?", (list_id, user_id)
+                "UPDATE clickup_connections SET list_id=?, list_name=? WHERE user_id=?",
+                (list_id, list_name, user_id),
             )
 
     def clickup_task(self, user_id: str, action_key: str) -> bool:

@@ -238,7 +238,7 @@ function renderClickUp(clickup) {
   $("#clickup-disconnect").hidden = !connected;
   $("#clickup-list-id").value = clickup.list_id || "";
   $("#clickup-status").textContent = !connected ? "Connect your ClickUp account to send action items." :
-    clickup.list_id ? `New tasks will be created in List ${clickup.list_id}.` : "Choose the ClickUp List that should receive tasks.";
+    clickup.list_id ? `New tasks will be created in "${clickup.list_name || clickup.list_id}".` : "Choose the ClickUp List that should receive tasks.";
   document.querySelectorAll("button[data-clickup]").forEach((button) => {
     button.hidden = !clickup.list_id || button.dataset.hasActions !== "true";
   });

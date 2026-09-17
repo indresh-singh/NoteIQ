@@ -256,6 +256,7 @@ def create_app(
             "available": request.app.state.clickup is not None,
             "connected": bool(connection),
             "list_id": connection.get("list_id") if connection else None,
+            "list_name": connection.get("list_name") if connection else None,
             "workspaces": connection.get("workspaces", []) if connection else [],
         }
 
@@ -308,10 +309,22 @@ def create_app(
 
     @app.post("/api/clickup/list")
     async def clickup_list(body: ClickUpList, request: Request, user: dict = Depends(current_user)):
-        if not request.app.state.store.clickup(user["id"]):
+        client = request.app.state.clickup
+        connection = request.app.state.store.clickup(user["id"])
+        if not client or not connection:
             raise HTTPException(409, "Connect ClickUp first.")
-        request.app.state.store.set_clickup_list(user["id"], body.list_id)
-        return {"list_id": body.list_id}
+        try:
+            token = client.decrypt(connection["token"])
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from None
+        try:
+            name = await client.list_name(token, body.list_id)
+        except ValueError:
+            raise HTTPException(
+                400, "That ClickUp List couldn't be found. Check the List ID."
+            ) from None
+        request.app.state.store.set_clickup_list(user["id"], body.list_id, name)
+        return {"list_id": body.list_id, "list_name": name}
 
     @app.post("/api/clickup/disconnect")
     async def clickup_disconnect(request: Request, user: dict = Depends(current_user)):
