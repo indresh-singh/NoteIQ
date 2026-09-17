@@ -14,7 +14,9 @@ def note_lines(note: Note, depth: int = 0) -> list[str]:
     return lines
 
 
-def build_card(insight: Insight, subject: str) -> dict | None:
+def build_card(
+    insight: Insight, subject: str, *, source: str = "Microsoft 365 Copilot meeting insights"
+) -> dict | None:
     notes = [line for note in insight.meetingNotes for line in note_lines(note)]
     actions = []
     for action in insight.actionItems:
@@ -23,7 +25,11 @@ def build_card(insight: Insight, subject: str) -> dict | None:
         )
         if content:
             owner = (action.ownerDisplayName or "").strip() or "Owner not specified"
-            actions.append(f"• {owner} — {content}")
+            line = f"• {owner} — {content}"
+            due = (action.dueDate or "").strip()
+            if due:
+                line += f" (Due: {due})"
+            actions.append(line)
     if not notes and not actions:
         return None
 
@@ -41,7 +47,7 @@ def build_card(insight: Insight, subject: str) -> dict | None:
     if insight.endDateTime:
         ended = insight.endDateTime.astimezone(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
         body.append(block(f"Meeting ended: {ended}", isSubtle=True))
-    body.append(block("Generated from Microsoft 365 Copilot meeting insights.", isSubtle=True))
+    body.append(block(f"Generated from {source}.", isSubtle=True))
     card = {
         "type": "AdaptiveCard",
         "version": "1.4",

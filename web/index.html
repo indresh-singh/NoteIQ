@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NoteIQ · Meeting notes</title>
-  <link rel="stylesheet" href="/static/style.css?v=1.4.3">
+  <link rel="stylesheet" href="/static/style.css?v=1.4.6">
   <script src="/static/vendor/teams.min.js" defer></script>
   <script src="/static/vendor/adaptivecards.min.js" defer></script>
-  <script src="/static/app.js?v=1.4.2" defer></script>
+  <script src="/static/app.js?v=1.4.9" defer></script>
 </head>
 <body>
   <main>
@@ -30,6 +30,27 @@
         <div><p id="greeting" class="eyebrow"></p><h1>Your meetings</h1></div>
         <div class="buttons"><button id="refresh">Refresh</button><button id="signout">Sign out</button></div>
       </div>
+      <div class="buttons workspace-tabs" role="tablist" aria-label="Transcript source">
+        <button type="button" id="meetings-tab" role="tab" aria-selected="true" aria-controls="meetings-panel">Meetings</button>
+        <button type="button" id="upload-tab" role="tab" aria-selected="false" aria-controls="upload-panel" tabindex="-1">Upload transcript</button>
+      </div>
+      <section id="upload-panel" role="tabpanel" aria-labelledby="upload-tab" hidden>
+        <form id="upload-transcript" class="upload-transcript">
+          <h2>Analyze a custom transcript</h2>
+          <p>Upload a UTF-8 TXT, VTT or SRT file (up to 60,000 characters). NoteIQ sends the transcript to the configured AI service to generate meeting notes and action items.</p>
+          <label for="upload-title">Meeting title</label>
+          <input id="upload-title" maxlength="200" required placeholder="Project planning">
+          <label for="upload-file">Transcript file</label>
+          <input id="upload-file" type="file" accept=".txt,.vtt,.srt" required>
+          <p class="hint">Only your latest successful run is kept. Generating a new result replaces the previous upload and its insights.</p>
+          <button type="submit" class="primary">Generate</button>
+          <p id="upload-status" role="status"></p>
+          <button type="button" id="upload-results" hidden>View results below</button>
+        </form>
+        <p id="uploads-empty" class="hint">Upload a transcript to see its summary and action items here.</p>
+        <div id="custom-transcripts"></div>
+      </section>
+      <section id="meetings-panel" role="tabpanel" aria-labelledby="meetings-tab">
       <div class="statusbar"><span class="dot"></span><p id="status" role="status"></p><button id="retry" hidden>Retry connection</button></div>
       <p id="notification-status" class="hint" role="status">NoteIQ will notify you in Teams Activity when transcripts and insights are ready.</p>
       <button id="notification-retry" hidden>Retry notifications</button>
@@ -44,6 +65,7 @@
         <p>Organize a Teams meeting and turn on transcription. Your transcript will appear first, followed by Copilot notes when they're ready.</p>
         <p class="hint">Insights can take up to four hours after a meeting ends. This app follows meetings from the time you connect.</p>
       </div>
+      </section>
       <details class="account"><summary>Account settings</summary>
         <section id="clickup-settings" hidden>
           <h2><img src="/static/clickup.svg" alt="" class="clickup-icon">ClickUp</h2>

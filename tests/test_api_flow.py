@@ -57,7 +57,9 @@ async def test_subscription_webhook_graph_fetch_and_private_card(
         ("GET", "/v1.0/" + resource),
     ]
     cards = client.get("/api/meetings", headers=signed_in).json()
-    assert cards[0]["content"]["insight"]["actionItems"] == samples["insight"]["actionItems"]
+    assert cards[0]["content"]["insight"]["actionItems"] == [
+        {**item, "dueDate": None} for item in samples["insight"]["actionItems"]
+    ]
     assert cards[0]["content"]["card"]["type"] == "AdaptiveCard"
 
 

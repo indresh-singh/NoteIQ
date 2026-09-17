@@ -7,6 +7,7 @@ import html
 import logging
 import secrets
 from contextlib import asynccontextmanager, suppress
+from datetime import datetime, timezone
 from urllib.parse import urlencode
 from uuid import UUID
 
@@ -15,14 +16,17 @@ from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Red
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from app.adaptive_cards import build_card
 from app.auth import identity_client
 from app.clickup import ClickUp
 from app.config import ROOT, Settings, settings
 from app.graph_client import GraphClient
-from app.models import UserSync, parse_event
+from app.models import TranscriptEvent, UserSync, parse_event
 from app.notifications import validate_notifications
+from app.openrouter import MAX_TRANSCRIPT_CHARS, OpenRouter
 from app.store import Store, digest
 from app.subscriptions import resource_owner
+from app.transcripts import summarize_with_openrouter
 from app.worker import run_worker
 
 log = logging.getLogger(__name__)
@@ -48,6 +52,12 @@ class ClickUpExport(BaseModel):
 
 class ClickUpConnect(BaseModel):
     in_teams: bool = False
+
+
+class CustomTranscript(BaseModel):
+    subject: str = Field(min_length=1, max_length=200)
+    filename: str = Field(min_length=1, max_length=255)
+    text: str = Field(min_length=1, max_length=MAX_TRANSCRIPT_CHARS)
 
 
 class MeetingRecovery(BaseModel):
@@ -248,6 +258,7 @@ def create_app(
         return {
             **{key: user[key] for key in ("id", "name", "status")},
             "notifications": "DELIVERY_ERROR" if failed else "READY",
+            "ai_provider": request.app.state.config.ai_provider,
             "clickup": {
                 "available": request.app.state.clickup is not None,
                 "connected": bool(request.app.state.store.clickup(user["id"])),
@@ -414,6 +425,15 @@ def create_app(
                     )
                 )
                 action_key = hashlib.sha256(raw.encode()).hexdigest()
+                existing_task_id = store.clickup_task_id(user["id"], action_key)
+                if existing_task_id:
+                    # The local record doesn't know if the task was deleted on
+                    # ClickUp's side (e.g. from the ClickUp UI), so confirm
+                    # with the API before trusting it as "already sent".
+                    if await client.task_exists(token, existing_task_id):
+                        skipped += 1
+                        continue
+                    store.forget_clickup_task(user["id"], action_key)
                 # Reserve the row before calling ClickUp: this is a single atomic
                 # statement, so concurrent exports of the same action item can't
                 # both pass the "already sent?" check and both create a task.
@@ -452,6 +472,78 @@ def create_app(
     @app.get("/api/meetings")
     async def meetings(request: Request, user: dict = Depends(current_user)):
         return request.app.state.store.meetings(user["id"])
+
+    @app.post("/api/transcripts/upload")
+    async def upload_transcript(
+        body: CustomTranscript, request: Request, user: dict = Depends(current_user)
+    ):
+        config = settings()
+        if not config.openrouter_enabled:
+            raise HTTPException(409, "Configure OpenRouter to analyze uploaded transcripts.")
+        if not body.filename.lower().endswith((".txt", ".vtt", ".srt")):
+            raise HTTPException(400, "Upload a UTF-8 .txt, .vtt or .srt file.")
+        if not body.subject.strip() or not body.text.strip() or "\x00" in body.text:
+            raise HTTPException(400, "Provide a title and a non-empty text transcript.")
+        meeting_key = "upload:" + secrets.token_hex(16)
+        try:
+            insight = await OpenRouter(config).summarize(
+                meeting_key, body.subject.strip(), body.text
+            )
+        except ValueError as error:
+            raise HTTPException(502, str(error)) from None
+        card = build_card(insight, body.subject.strip(), source="OpenRouter")
+        if card is None:
+            raise HTTPException(502, "OpenRouter returned no usable notes. Please try again.")
+        store = request.app.state.store
+        local_id = store.save_transcript(user["id"], meeting_key, meeting_key, body.text)
+        if local_id is None:
+            raise HTTPException(409, "Your account was disconnected. Please connect again.")
+        store.save_meeting(
+            user["id"],
+            body.subject.strip(),
+            {
+                "meeting_id": meeting_key,
+                "source": "upload",
+                "transcript": {
+                    "id": meeting_key,
+                    "local_id": local_id,
+                    "createdDateTime": datetime.now(timezone.utc).isoformat(),
+                },
+                "insight": {**insight.model_dump(mode="json"), "provider": "openrouter"},
+                "card": card,
+            },
+        )
+        store.retain_latest_upload(user["id"])
+        return {"status": "saved", "meeting_id": meeting_key}
+
+    @app.post("/api/meetings/{meeting_id}/regenerate")
+    async def regenerate_insight(
+        meeting_id: int, request: Request, user: dict = Depends(current_user)
+    ):
+        store = request.app.state.store
+        meeting = store.meeting(user["id"], meeting_id)
+        if not meeting:
+            raise HTTPException(404, "Meeting not found.")
+        if not settings().openrouter_enabled or (
+            settings().ai_provider != "openrouter" and meeting["content"].get("source") != "upload"
+        ):
+            raise HTTPException(409, "Switch AI_PROVIDER to openrouter to regenerate insights.")
+        transcripts = meeting["content"].get("transcripts") or []
+        if not transcripts:
+            raise HTTPException(409, "No transcript available to summarize yet.")
+        latest = transcripts[-1]["transcript"]
+        text = store.transcript(user["id"], latest["local_id"])
+        if text is None:
+            raise HTTPException(404, "Transcript content not found.")
+        event = TranscriptEvent(
+            user_id=user["id"],
+            meeting_id=meeting["content"]["meeting_id"],
+            transcript_id=latest["id"],
+        )
+        ok = await summarize_with_openrouter(store, user["id"], event, meeting["subject"], text)
+        if not ok:
+            raise HTTPException(502, "OpenRouter could not generate a summary. Try again.")
+        return store.meeting(user["id"], meeting_id)
 
     @app.post("/api/sync")
     async def sync(request: Request, user: dict = Depends(current_user)):

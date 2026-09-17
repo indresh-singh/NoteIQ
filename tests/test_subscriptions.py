@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
+from app.config import settings
 from app.subscriptions import renew_subscriptions
 
 
@@ -27,6 +28,18 @@ async def test_create_missing_subscription(config, store):
     assert call.args == ("POST", "/subscriptions")
     assert call.kwargs["json"]["includeResourceData"] is False
     assert call.kwargs["json"]["lifecycleNotificationUrl"].endswith("/api/graph/lifecycle")
+
+
+async def test_openrouter_provider_skips_copilot_insight_subscription(monkeypatch, config, store):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setenv("OPENROUTER_MODEL", "test/model")
+    monkeypatch.setenv("AI_PROVIDER", "openrouter")
+    settings.cache_clear()
+    graph = AsyncMock()
+    graph.list.return_value = []
+    await renew_subscriptions(graph, store)
+    assert graph.request.await_count == 1
+    assert graph.request.call_args.kwargs["json"]["resource"].endswith("/getAllTranscripts")
 
 
 @pytest.mark.parametrize("minutes,force,expected", [(10, False, 1), (50, False, 0), (50, True, 1)])

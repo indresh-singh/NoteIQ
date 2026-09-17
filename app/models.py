@@ -17,6 +17,7 @@ class ActionItem(BaseModel):
     title: str | None = None
     text: str | None = None
     ownerDisplayName: str | None = None
+    dueDate: str | None = None
 
 
 class Insight(BaseModel):

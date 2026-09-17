@@ -1,6 +1,7 @@
 import os
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -23,6 +24,9 @@ class Settings(BaseModel):
     clickup_client_id: str | None = None
     clickup_client_secret: SecretStr | None = None
     clickup_token_key: SecretStr | None = None
+    openrouter_api_key: SecretStr | None = None
+    openrouter_model: str | None = None
+    ai_provider: Literal["copilot", "openrouter"] = "copilot"
 
     @property
     def redirect_uri(self) -> str:
@@ -35,6 +39,10 @@ class Settings(BaseModel):
     @property
     def clickup_enabled(self) -> bool:
         return self.clickup_client_id is not None
+
+    @property
+    def openrouter_enabled(self) -> bool:
+        return self.openrouter_api_key is not None
 
 
 @lru_cache
@@ -53,6 +61,9 @@ def settings() -> Settings:
         clickup_client_id=os.getenv("CLICKUP_CLIENT_ID") or None,
         clickup_client_secret=os.getenv("CLICKUP_CLIENT_SECRET") or None,
         clickup_token_key=os.getenv("CLICKUP_TOKEN_KEY") or None,
+        openrouter_api_key=os.getenv("OPENROUTER_API_KEY") or None,
+        openrouter_model=os.getenv("OPENROUTER_MODEL") or None,
+        ai_provider=os.getenv("AI_PROVIDER", "copilot"),
     )
     url = urlsplit(config.public_url)
     if url.scheme != "https" or not url.hostname or url.path or url.query or url.fragment:
@@ -76,4 +87,8 @@ def settings() -> Settings:
         raise ValueError(
             "Configure CLICKUP_CLIENT_ID, CLICKUP_CLIENT_SECRET and CLICKUP_TOKEN_KEY together"
         )
+    if bool(config.openrouter_api_key) != bool(config.openrouter_model):
+        raise ValueError("Configure OPENROUTER_API_KEY and OPENROUTER_MODEL together")
+    if config.ai_provider == "openrouter" and not config.openrouter_enabled:
+        raise ValueError("AI_PROVIDER=openrouter requires OPENROUTER_API_KEY and OPENROUTER_MODEL")
     return config

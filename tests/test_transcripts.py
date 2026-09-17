@@ -4,7 +4,8 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from app.models import TranscriptEvent
+from app.config import settings
+from app.models import Insight, TranscriptEvent
 from app.transcripts import process_transcript
 from app.worker import run_job
 from tests.conftest import USER
@@ -12,6 +13,13 @@ from tests.conftest import USER
 
 def event():
     return TranscriptEvent(user_id=USER, meeting_id="sample-meeting", transcript_id="transcript")
+
+
+def enable_openrouter(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setenv("OPENROUTER_MODEL", "test/model")
+    monkeypatch.setenv("AI_PROVIDER", "openrouter")
+    settings.cache_clear()
 
 
 @pytest.mark.parametrize(
@@ -116,3 +124,51 @@ async def test_transcript_attendee_is_skipped(store, samples):
     graph.request.return_value = samples["meeting"]
     assert await process_transcript(event(), graph, store) == "SKIPPED_NOT_ORGANIZER"
     assert graph.request.await_count == 1
+
+
+async def test_openrouter_provider_generates_insight_instead_of_copilot(
+    monkeypatch, store, samples
+):
+    enable_openrouter(monkeypatch)
+
+    class FakeOpenRouter:
+        def __init__(self, config):
+            assert config.openrouter_model == "test/model"
+
+        async def summarize(self, transcript_id, subject, text):
+            assert text == "WEBVTT\nHello"
+            return Insight(
+                id=f"openrouter:{transcript_id}",
+                meetingNotes=[{"text": "Discussed budget."}],
+                actionItems=[{"text": "Send proposal.", "ownerDisplayName": "Ada"}],
+            )
+
+    monkeypatch.setattr("app.transcripts.OpenRouter", FakeOpenRouter)
+    graph = AsyncMock()
+    graph.request.side_effect = [samples["meeting"], {"id": "transcript"}, "WEBVTT\nHello"]
+
+    assert await process_transcript(event(), graph, store) == "TRANSCRIPT_SAVED"
+
+    insights = store.meetings(USER)[0]["content"]["insights"]
+    assert len(insights) == 1
+    assert insights[0]["insight"]["id"] == "openrouter:transcript"
+    assert insights[0]["insight"]["provider"] == "openrouter"
+    assert "OpenRouter (test/model)" in json.dumps(insights[0]["card"])
+
+
+async def test_openrouter_failure_does_not_fail_transcript_processing(monkeypatch, store, samples):
+    enable_openrouter(monkeypatch)
+
+    class FailingOpenRouter:
+        def __init__(self, config):
+            pass
+
+        async def summarize(self, transcript_id, subject, text):
+            raise ValueError("OpenRouter rejected this API key.")
+
+    monkeypatch.setattr("app.transcripts.OpenRouter", FailingOpenRouter)
+    graph = AsyncMock()
+    graph.request.side_effect = [samples["meeting"], {"id": "transcript"}, "WEBVTT\nHello"]
+
+    assert await process_transcript(event(), graph, store) == "TRANSCRIPT_SAVED"
+    assert store.meetings(USER)[0]["content"].get("insights") is None

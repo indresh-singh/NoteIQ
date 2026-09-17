@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from app.config import settings
 from app.insights import process_insight
 from app.models import InsightEvent, MeetingSync, UserSync, parse_event
 from app.sync import discover_meetings, recover_from_link, sync_meeting
@@ -34,6 +35,18 @@ async def test_transcript_failure_does_not_block_insight_recovery(store, graph):
     with pytest.raises(RuntimeError, match="Retry"):
         await sync_meeting(MeetingSync(user_id=USER, meeting_id="m"), graph, store)
     assert json.loads(store.next_job()["payload"])["insight_id"] == "i"
+
+
+async def test_openrouter_provider_skips_copilot_insight_sync(monkeypatch, store, graph):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setenv("OPENROUTER_MODEL", "test/model")
+    monkeypatch.setenv("AI_PROVIDER", "openrouter")
+    settings.cache_clear()
+    store.save_meeting(USER, "Meeting", {"meeting_id": "m"})
+    graph.list.return_value = [{"id": "t"}]
+    assert await sync_meeting(MeetingSync(user_id=USER, meeting_id="m"), graph, store) == "SYNCED"
+    assert graph.list.await_count == 1
+    assert json.loads(store.next_job()["payload"])["transcript_id"] == "t"
 
 
 async def test_unknown_meeting_never_queries_graph(store, graph):

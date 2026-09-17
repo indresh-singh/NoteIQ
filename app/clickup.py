@@ -106,6 +106,32 @@ class ClickUp:
             json={"name": name[:250], "markdown_description": description[:20_000]},
         )
 
+    async def task_exists(self, token: str, task_id: str) -> bool:
+        """Check whether a previously exported task is still present in ClickUp.
+
+        A plain `request()` call would turn a 404 (task deleted on ClickUp's
+        side) into a generic ValueError, indistinguishable from a real
+        failure. This treats 404 as a normal "no longer exists" result so
+        callers can re-export instead of erroring out.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                response = await client.get(
+                    f"{API}/task/{task_id}", headers={"Authorization": token}
+                )
+            if response.status_code == 404:
+                return False
+            response.raise_for_status()
+            return True
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code in {401, 403}:
+                raise ValueError(
+                    "ClickUp rejected this connection. Reconnect ClickUp and try again."
+                ) from None
+            raise ValueError("ClickUp could not complete this request. Try again.") from None
+        except httpx.HTTPError:
+            raise ValueError("Unable to reach ClickUp. Try again.") from None
+
     async def request(
         self, method: str, path: str, *, token: str | None = None, auth: bool = True, **kwargs
     ):

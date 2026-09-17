@@ -109,3 +109,34 @@ az containerapp ingress traffic show --name noteiq --resource-group noteiq --out
 
 References: [Transcript content](https://learn.microsoft.com/en-us/graph/api/calltranscript-get?view=graph-rest-1.0),
 [meeting insights](https://learn.microsoft.com/en-us/microsoftteams/platform/graph-api/meeting-transcripts/meeting-insights).
+
+## Custom transcript uploads
+
+In NoteIQ, open **Upload transcript**, enter a meeting title, select a UTF-8
+TXT, VTT or SRT file and choose **Generate summary and action items**.
+Results appear exclusively in the Upload transcript tab, with collapsible Summary
+and Action Items sections, responsible people, and the shared ClickUp export.
+Only the latest successful custom run is retained per user; a new successful run
+replaces previous custom records and transcript text. Failed analysis preserves
+the last successful result. The Meetings tab shows only Teams-synced records.
+
+Requires `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` in the running service.
+This upload feature uses OpenRouter independently of `AI_PROVIDER`.
+The transcript is sent to that external provider; the key stays on the server.
+Limit: 60,000 characters. Analysis runs during the request (allow up to 90 seconds
+in your API client). Failed generation saves no new meeting; retry the upload.
+
+Authenticated API: `POST /api/transcripts/upload`, JSON body:
+
+```json
+{
+  "subject": "Project planning",
+  "filename": "planning.txt",
+  "text": "Ada: I will send the proposal tomorrow."
+}
+```
+
+Use the same NoteIQ bearer session as other protected endpoints.
+Returns `{"status":"saved","meeting_id":"upload:..."}`.
+Read results through `GET /api/meetings`. Uploaded records belong to the
+signed-in user and are excluded from Graph synchronization.

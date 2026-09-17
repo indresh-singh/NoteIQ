@@ -99,6 +99,8 @@ Set these normal Container App environment variables:
 | `TEAMS_APP_ID` | Stable Teams package ID; normally the same as `GRAPH_CLIENT_ID` |
 | `PUBLIC_BASE_URL` | `https://noteiq.salmontree-16ed39aa.uaenorth.azurecontainerapps.io` |
 | `CLICKUP_CLIENT_ID` | Optional ClickUp OAuth client ID |
+| `AI_PROVIDER` | `copilot` (default) or `openrouter` — selects which service generates meeting summaries and action items |
+| `OPENROUTER_MODEL` | Required when `AI_PROVIDER=openrouter`: the OpenRouter model id, e.g. `openai/gpt-4o-mini` |
 
 Set protected values as Container App secrets and reference them from variables:
 
@@ -109,6 +111,7 @@ Set protected values as Container App secrets and reference them from variables:
 | `noteiq-database-url` | `NOTEIQ_DATABASE_URL=secretref:noteiq-database-url` | PostgreSQL connection string |
 | `clickup-client-secret` | `CLICKUP_CLIENT_SECRET=secretref:clickup-client-secret` | Optional ClickUp OAuth secret |
 | `clickup-token-key` | `CLICKUP_TOKEN_KEY=secretref:clickup-token-key` | Optional Fernet key for encrypted ClickUp tokens |
+| `openrouter-api-key` | `OPENROUTER_API_KEY=secretref:openrouter-api-key` | Required when `AI_PROVIDER=openrouter` |
 
 The PostgreSQL URL format is:
 

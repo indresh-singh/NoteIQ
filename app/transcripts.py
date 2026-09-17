@@ -1,15 +1,65 @@
-"""Save Teams transcript text; Copilot generation happens independently in Microsoft 365."""
+"""Save Teams transcript text; Copilot generation happens independently in Microsoft 365.
+
+When AI_PROVIDER=openrouter, the same transcript text is sent to OpenRouter
+instead for the meeting summary and action items (see app/openrouter.py).
+"""
 
 import logging
 
 import httpx
 
-from app.activity import TRANSCRIPT_READY, queue_notification
+from app.activity import INSIGHTS_READY, TRANSCRIPT_READY, queue_notification
+from app.adaptive_cards import build_card
+from app.config import settings
 from app.graph_client import GraphClient, retryable
 from app.models import MeetingSync, TranscriptEvent
+from app.openrouter import OpenRouter
 from app.store import Store
 
 log = logging.getLogger(__name__)
+
+
+async def summarize_with_openrouter(
+    store: Store, user_id: str, event: TranscriptEvent, subject: str, text: str
+) -> bool:
+    """Generate and save an OpenRouter insight. Returns whether it succeeded.
+
+    Used both as a best-effort step after a transcript is saved (caller
+    ignores the result) and by the manual "Regenerate" endpoint in app/web.py,
+    which surfaces a failure to the user instead of just logging it.
+    """
+    try:
+        insight = await OpenRouter(settings()).summarize(event.transcript_id, subject, text)
+    except ValueError as error:
+        # These messages are hand-written in app/openrouter.py and never include
+        # transcript content or secrets, so it's safe to log the reason directly.
+        log.warning(
+            "OpenRouter summary user=%s meeting=%s failed reason=%s",
+            user_id,
+            event.meeting_id,
+            error,
+        )
+        return False
+    card = build_card(insight, subject, source=f"OpenRouter ({settings().openrouter_model})")
+    if card is None:
+        return False
+    store.save_meeting(
+        user_id,
+        subject,
+        {
+            "meeting_id": event.meeting_id,
+            "insight": {
+                **insight.model_dump(mode="json"),
+                "source_id": insight.id,
+                "provider": "openrouter",
+            },
+            "card": card,
+        },
+    )
+    queue_notification(
+        store, user_id, f"insight:{event.meeting_id}:{insight.id}", subject, INSIGHTS_READY
+    )
+    return True
 
 
 async def process_transcript(event: TranscriptEvent, graph: GraphClient, store: Store) -> str:
@@ -72,6 +122,8 @@ async def process_transcript(event: TranscriptEvent, graph: GraphClient, store: 
             subject,
             TRANSCRIPT_READY,
         )
+        if settings().ai_provider == "openrouter":
+            await summarize_with_openrouter(store, user_id, event, subject, text)
         return "TRANSCRIPT_SAVED"
     except httpx.HTTPStatusError as error:
         if retryable(error) or error.response.status_code == 404:

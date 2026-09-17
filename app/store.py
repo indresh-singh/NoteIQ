@@ -11,12 +11,44 @@ import tempfile
 import threading
 import time
 from contextlib import contextmanager, suppress
+from datetime import datetime
 from pathlib import Path
 
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 log = logging.getLogger(__name__)
+
+
+def _meeting_occurred_at(content: dict) -> float | None:
+    """Best-effort real-world timestamp for a meeting.
+
+    Used to sort the meetings list by when the meeting actually happened,
+    not by when we last wrote to its row — otherwise regenerating an old
+    meeting's insight (or Copilot delivering one late) would bump it to the
+    top of the list ahead of meetings that happened more recently.
+    """
+    dates = []
+    insights = content.get("insights") or (
+        [{"insight": content["insight"]}] if content.get("insight") else []
+    )
+    for item in insights:
+        end = (item.get("insight") or {}).get("endDateTime")
+        if end:
+            dates.append(end)
+    transcripts = content.get("transcripts") or (
+        [{"transcript": content["transcript"]}] if content.get("transcript") else []
+    )
+    for item in transcripts:
+        created_at = (item.get("transcript") or {}).get("createdDateTime")
+        if created_at:
+            dates.append(created_at)
+    if not dates:
+        return None
+    try:
+        return max(datetime.fromisoformat(d.replace("Z", "+00:00")).timestamp() for d in dates)
+    except (ValueError, AttributeError):
+        return None
 
 
 class Row(dict):
@@ -141,9 +173,11 @@ class Store:
                 DROP TABLE IF EXISTS chat_connections;
                 DROP TABLE IF EXISTS outbox;
             """)
-            # SQLite has no ADD COLUMN IF NOT EXISTS; older databases lack this column.
+            # SQLite has no ADD COLUMN IF NOT EXISTS; older databases lack these columns.
             with suppress(sqlite3.OperationalError):
                 db.execute("ALTER TABLE clickup_connections ADD COLUMN list_name TEXT")
+            with suppress(sqlite3.OperationalError):
+                db.execute("ALTER TABLE meetings ADD COLUMN occurred_at REAL")
         # Some managed volume drivers set permissions at mount time and do not implement chmod.
         with suppress(OSError):
             path.chmod(0o600)
@@ -164,6 +198,7 @@ class Store:
             """CREATE TABLE IF NOT EXISTS meetings (
                 id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL, subject TEXT NOT NULL,
                 content TEXT NOT NULL, created DOUBLE PRECISION NOT NULL)""",
+            "ALTER TABLE meetings ADD COLUMN IF NOT EXISTS occurred_at DOUBLE PRECISION",
             """CREATE TABLE IF NOT EXISTS transcripts (
                 id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL, meeting_id TEXT NOT NULL,
                 transcript_id TEXT NOT NULL, content TEXT NOT NULL,
@@ -401,6 +436,23 @@ class Store:
                 (user_id, list_id),
             )
 
+    def clickup_task_id(self, user_id: str, action_key: str) -> str | None:
+        """Return the ClickUp task id previously recorded for this action item, if any."""
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT task_id FROM clickup_tasks WHERE user_id=? AND action_key=?",
+                (user_id, action_key),
+            ).fetchone()
+        return row["task_id"] if row and row["task_id"] else None
+
+    def forget_clickup_task(self, user_id: str, action_key: str):
+        """Drop a stale record so a deleted-in-ClickUp task can be re-exported."""
+        with self.connect() as db:
+            db.execute(
+                "DELETE FROM clickup_tasks WHERE user_id=? AND action_key=?",
+                (user_id, action_key),
+            )
+
     def reserve_clickup_task(self, user_id: str, action_key: str) -> bool:
         """Atomically claim an action item before calling the ClickUp API.
 
@@ -531,6 +583,7 @@ class Store:
 
     def save_meeting(self, user_id: str, subject: str, content: dict):
         with self.connect() as db:
+            occurred_at = _meeting_occurred_at(content)
             if content.get("meeting_id"):
                 query = (
                     """SELECT id, content FROM meetings
@@ -555,19 +608,21 @@ class Store:
                         items = [x for x in items if x[kind]["id"] != content[kind]["id"]]
                         merged[field] = [*items, item]
                 merged.update(content)
+                occurred_at = _meeting_occurred_at(merged) or occurred_at
                 if row:
                     db.execute(
-                        """UPDATE meetings SET subject=?, content=?, created=? WHERE id=?
+                        """UPDATE meetings SET subject=?, content=?, created=?,
+                        occurred_at=COALESCE(?, occurred_at) WHERE id=?
                         AND EXISTS (SELECT 1 FROM users WHERE id=? AND enabled=1)""",
-                        (subject, json.dumps(merged), time.time(), row["id"], user_id),
+                        (subject, json.dumps(merged), time.time(), occurred_at, row["id"], user_id),
                     )
                     return
                 content = merged
             # Recheck enrollment in case the user disconnected while Graph was responding.
             db.execute(
-                """INSERT INTO meetings(user_id, subject, content, created)
-                SELECT id, ?, ?, ? FROM users WHERE id=? AND enabled=1""",
-                (subject, json.dumps(content), time.time(), user_id),
+                """INSERT INTO meetings(user_id, subject, content, created, occurred_at)
+                SELECT id, ?, ?, ?, ? FROM users WHERE id=? AND enabled=1""",
+                (subject, json.dumps(content), time.time(), occurred_at, user_id),
             )
 
     def save_transcript(self, user_id: str, meeting_id: str, transcript_id: str, text: str):
@@ -588,11 +643,25 @@ class Store:
             ).fetchone()
         return row[0] if row else None
 
+    def retain_latest_upload(self, user_id: str):
+        """Keep only the most recently saved custom run for this user."""
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT id, content FROM meetings WHERE user_id=? ORDER BY created DESC, id DESC",
+                (user_id,),
+            ).fetchall()
+            uploads = [(row["id"], json.loads(row["content"])) for row in rows
+                       if json.loads(row["content"]).get("source") == "upload"]
+            for row_id, content in uploads[1:]:
+                db.execute("DELETE FROM transcripts WHERE user_id=? AND meeting_id=?",
+                           (user_id, content["meeting_id"]))
+                db.execute("DELETE FROM meetings WHERE user_id=? AND id=?", (user_id, row_id))
+
     def meetings(self, user_id: str) -> list[dict]:
         with self.connect() as db:
             rows = db.execute(
                 """SELECT id, subject, content, created FROM meetings
-                WHERE user_id=? ORDER BY created DESC, id DESC LIMIT 100""",
+                WHERE user_id=? ORDER BY COALESCE(occurred_at, created) DESC, id DESC LIMIT 100""",
                 (user_id,),
             ).fetchall()
         return [dict(row, content=json.loads(row["content"])) for row in rows]

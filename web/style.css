@@ -46,3 +46,20 @@
 .recover-meeting{display:flex;flex-wrap:wrap;justify-content:center;align-items:stretch;gap:8px;margin:22px auto 28px;max-width:680px}.recover-meeting label{width:100%;font-size:12px;color:var(--muted)}.recover-meeting input{min-width:280px;flex:1;height:38px;padding:0 12px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--text);font:inherit;font-size:13px;box-sizing:border-box}.recover-meeting button{height:38px;padding:0 15px}
 
 .header-actions{display:flex;align-items:center;gap:14px}.clickup-shortcut{display:flex;align-items:center;gap:6px;padding:6px 10px}.clickup-shortcut img{width:17px;height:17px}
+
+.provider-toggle{display:flex;align-items:center;gap:10px;margin:18px 0;flex-wrap:wrap}
+.provider-states{display:inline-flex;padding:3px;border:1px solid var(--line);border-radius:10px;background:var(--bg)}
+.provider-state{border:0;border-radius:7px;background:transparent;color:var(--muted);padding:7px 14px}
+.provider-state:hover{border:0;color:var(--text)}
+.provider-state[aria-checked=true]{background:var(--paper);color:var(--text);box-shadow:0 1px 4px #20204018}
+.regenerate-button{display:inline-flex;align-items:center;gap:6px;margin-left:2px;box-shadow:0 3px 9px #2020401f}
+.regenerate-button:hover{box-shadow:0 5px 14px #20204029}
+.regenerate-icon{display:inline-block}
+.regenerate-button.spinning .regenerate-icon{animation:noteiq-spin 1s linear infinite}
+@keyframes noteiq-spin{to{transform:rotate(360deg)}}
+
+.workspace-tabs { margin: 1.5rem 0; }
+.workspace-tabs [aria-selected="true"] { background: #5653bf; color: white; }
+.upload-transcript { display: grid; gap: 1rem; max-width: 48rem; padding: 1.5rem; border: 1px solid #ddd; border-radius: 1rem; }
+.upload-transcript input { padding: .8rem; font: inherit; max-width: 100%; box-sizing: border-box; }
+#upload-panel[hidden], #meetings-panel[hidden] { display: none; }

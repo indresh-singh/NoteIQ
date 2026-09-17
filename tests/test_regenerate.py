@@ -1,0 +1,93 @@
+from app.config import settings
+from app.models import Insight
+from tests.conftest import USER
+
+
+def enable_openrouter(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setenv("OPENROUTER_MODEL", "test/model")
+    monkeypatch.setenv("AI_PROVIDER", "openrouter")
+    settings.cache_clear()
+
+
+def seed_meeting_with_transcript(store, text="Hello transcript"):
+    local_id = store.save_transcript(USER, "m", "t", text)
+    store.save_meeting(
+        USER,
+        "Meeting",
+        {
+            "meeting_id": "m",
+            "transcript": {
+                "id": "t",
+                "local_id": local_id,
+                "createdDateTime": None,
+                "contentCorrelationId": None,
+            },
+        },
+    )
+    return store.meetings(USER)[0]["id"]
+
+
+class FakeOpenRouter:
+    def __init__(self, config):
+        pass
+
+    async def summarize(self, transcript_id, subject, text):
+        assert text == "Hello transcript"
+        return Insight(
+            id=f"openrouter:{transcript_id}",
+            meetingNotes=[{"text": "Regenerated note."}],
+            actionItems=[{"text": "Follow up", "ownerDisplayName": "Ada"}],
+        )
+
+
+def test_regenerate_replaces_openrouter_insight(monkeypatch, client, store, signed_in):
+    enable_openrouter(monkeypatch)
+    monkeypatch.setattr("app.transcripts.OpenRouter", FakeOpenRouter)
+    meeting_id = seed_meeting_with_transcript(store)
+
+    response = client.post(f"/api/meetings/{meeting_id}/regenerate", headers=signed_in, json={})
+    assert response.status_code == 200
+    insights = response.json()["content"]["insights"]
+    assert len(insights) == 1
+    assert insights[0]["insight"]["id"] == "openrouter:t"
+    assert insights[0]["insight"]["provider"] == "openrouter"
+
+
+def test_regenerate_requires_openrouter_provider(client, store, signed_in):
+    meeting_id = seed_meeting_with_transcript(store)
+    response = client.post(f"/api/meetings/{meeting_id}/regenerate", headers=signed_in, json={})
+    assert response.status_code == 409
+    assert "AI_PROVIDER" in response.json()["detail"]
+
+
+def test_regenerate_requires_a_transcript(monkeypatch, client, store, signed_in):
+    enable_openrouter(monkeypatch)
+    store.save_meeting(USER, "Meeting", {"meeting_id": "m"})
+    meeting_id = store.meetings(USER)[0]["id"]
+    response = client.post(f"/api/meetings/{meeting_id}/regenerate", headers=signed_in, json={})
+    assert response.status_code == 409
+    assert "transcript" in response.json()["detail"].lower()
+
+
+def test_regenerate_rejects_unknown_meeting(monkeypatch, client, store, signed_in):
+    enable_openrouter(monkeypatch)
+    response = client.post("/api/meetings/999/regenerate", headers=signed_in, json={})
+    assert response.status_code == 404
+
+
+def test_regenerate_surfaces_openrouter_failure(monkeypatch, client, store, signed_in):
+    enable_openrouter(monkeypatch)
+
+    class FailingOpenRouter:
+        def __init__(self, config):
+            pass
+
+        async def summarize(self, transcript_id, subject, text):
+            raise ValueError("OpenRouter rejected this API key.")
+
+    monkeypatch.setattr("app.transcripts.OpenRouter", FailingOpenRouter)
+    meeting_id = seed_meeting_with_transcript(store)
+
+    response = client.post(f"/api/meetings/{meeting_id}/regenerate", headers=signed_in, json={})
+    assert response.status_code == 502

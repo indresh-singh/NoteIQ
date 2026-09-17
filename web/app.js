@@ -9,6 +9,7 @@ let loading = false;
 let teamsUserId = "";
 let syncMessage = "";
 let previousMeetings = "";
+let previousUploads = "";
 let previousClickUp = "";
 try { token = sessionStorage.getItem("noteiq-session") || ""; } catch { /* Memory-only fallback. */ }
 
@@ -26,14 +27,16 @@ function signedOut() {
   syncMessage = "";
   remember("");
   previousMeetings = "";
+  previousUploads = "";
   $("#meetings").replaceChildren();
+  $("#custom-transcripts").replaceChildren();
   $("#workspace").hidden = true;
   $("#welcome").hidden = false;
 }
 
-async function api(path, body) {
+async function api(path, body, timeoutMs = 20000) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
   const response = await fetch(path, {
     signal: controller.signal,
@@ -155,46 +158,143 @@ function renderCollapsibleNote(note) {
   return wrapper;
 }
 
-function renderMeetings(meetings, clickup) {
-  const signature = JSON.stringify(meetings);
-  if (signature === previousMeetings) return;
-  previousMeetings = signature;
-  $("#meetings").replaceChildren();
-  $("#empty").hidden = meetings.length > 0;
+function providerLabel(provider) {
+  return provider === "openrouter" ? "OpenRouter" : "Microsoft 365 Copilot";
+}
+
+function renderMeetings(meetings, clickup, aiProvider, custom = false) {
+  const signature = JSON.stringify(meetings) + aiProvider + JSON.stringify(clickup);
+  if (signature === (custom ? previousUploads : previousMeetings)) return;
+  if (custom) previousUploads = signature;
+  else previousMeetings = signature;
+  const target = $(custom ? "#custom-transcripts" : "#meetings");
+  target.replaceChildren();
+  $(custom ? "#uploads-empty" : "#empty").hidden = meetings.length > 0;
   for (const meeting of meetings) {
     const article = element("article", "", "meeting");
-    article.append(element("p", "MEETING FOLLOW-UP", "eyebrow"), element("h2", meeting.subject));
-    const date = meeting.content.insight?.endDateTime || meeting.content.transcript?.createdDateTime;
-    if (date) article.append(element("time", new Date(date).toLocaleString()));
-    article.append(element("p", meeting.content.insight ? "Copilot insights available" :
-      "Transcript ready. Waiting for Copilot's summary and action items.", "hint"));
+    article.append(element("p", custom ? "CUSTOM TRANSCRIPT" : "MEETING FOLLOW-UP", "eyebrow"), element("h2", meeting.subject));
+
+    // Every insight segment carries its own provider tag; group them so the
+    // toggle below can show exactly one provider's data at a time instead of
+    // merging Copilot's and OpenRouter's notes/action items together.
+    const segments = meeting.content.insights || (meeting.content.insight ? [{insight: meeting.content.insight}] : []);
+    const providerOf = (segment) => (segment.insight?.provider === "openrouter" ? "openrouter" : "copilot");
+    const byProvider = {
+      copilot: segments.filter((segment) => providerOf(segment) === "copilot"),
+      openrouter: segments.filter((segment) => providerOf(segment) === "openrouter"),
+    };
+    const hasTranscript = (meeting.content.transcripts || []).length > 0;
+    const showToggle = byProvider.copilot.length > 0 || byProvider.openrouter.length > 0 || hasTranscript;
+    let selected = byProvider.copilot.length && !byProvider.openrouter.length ? "copilot"
+      : byProvider.openrouter.length && !byProvider.copilot.length ? "openrouter"
+      : aiProvider === "openrouter" ? "openrouter" : "copilot";
+
+    const dateLine = element("time", "");
+    const hintLine = element("p", "", "hint");
+    const footerLine = element("p", "", "hint");
+    article.append(dateLine, hintLine);
+
+    let activeContentButton = null;
+
+    function updateProviderText() {
+      const has = byProvider[selected].length > 0;
+      const latest = byProvider[selected].map((segment) => segment.insight).find((insight) => insight?.endDateTime);
+      const when = latest?.endDateTime || meeting.content.transcript?.createdDateTime;
+      dateLine.textContent = when ? new Date(when).toLocaleString() : "";
+      dateLine.hidden = !when;
+      hintLine.textContent = has
+        ? `${providerLabel(selected)} insights available`
+        : hasTranscript
+        ? `Transcript ready. Waiting for ${providerLabel(selected)}'s summary and action items.`
+        : "Waiting for the transcript.";
+      footerLine.textContent = `Generated from ${providerLabel(selected)} meeting insights.`;
+    }
+
+    const providerToggle = element("div", "", "provider-toggle");
+    const providerStates = element("div", "", "provider-states");
+    providerStates.setAttribute("role", "radiogroup");
+    providerStates.setAttribute("aria-label", "Meeting insight source");
+    const copilotState = element("button", "Copilot", "provider-state");
+    const openrouterState = element("button", "OpenRouter", "provider-state");
+    for (const state of [copilotState, openrouterState]) {
+      state.type = "button";
+      state.setAttribute("role", "radio");
+    }
+    providerStates.append(copilotState, openrouterState);
+    const regenerateButton = element("button", "", "regenerate-button");
+    regenerateButton.append(element("span", "⟳", "regenerate-icon"), document.createTextNode(" Regenerate"));
+    providerToggle.append(providerStates, regenerateButton);
+    if (showToggle && !custom) article.append(providerToggle);
+
+    function updateToggle() {
+      const openrouterSelected = selected === "openrouter";
+      copilotState.setAttribute("aria-checked", String(!openrouterSelected));
+      openrouterState.setAttribute("aria-checked", String(openrouterSelected));
+      copilotState.tabIndex = openrouterSelected ? -1 : 0;
+      openrouterState.tabIndex = openrouterSelected ? 0 : -1;
+      regenerateButton.hidden = !openrouterSelected;
+    }
+
+    function selectProvider(provider) {
+      selected = provider;
+      updateProviderText();
+      updateToggle();
+      if (activeContentButton) activeContentButton.click();
+    }
+    copilotState.onclick = () => selectProvider("copilot");
+    openrouterState.onclick = () => selectProvider("openrouter");
+    providerStates.onkeydown = (event) => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const provider = event.key === "ArrowRight" || event.key === "End" ? "openrouter" : "copilot";
+      selectProvider(provider);
+      (provider === "openrouter" ? openrouterState : copilotState).focus();
+    };
+    regenerateButton.onclick = async () => {
+      regenerateButton.disabled = true;
+      regenerateButton.classList.add("spinning");
+      try {
+        await api(`/api/meetings/${meeting.id}/regenerate`, {}, 90000);
+        await refresh();
+      } catch (error) {
+        showError(error.message);
+      } finally {
+        regenerateButton.disabled = false;
+        regenerateButton.classList.remove("spinning");
+      }
+    };
+
     const buttons = element("div", "", "buttons");
     const content = element("div", "", "card-content");
     for (const [label, heading] of [["Summary", "KEY NOTES"], ["Action items", "ACTION ITEMS"]]) {
       const button = element("button", label);
       button.setAttribute("aria-pressed", "false");
       button.onclick = () => {
+        activeContentButton = button;
         buttons.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b === button)));
         content.replaceChildren();
-        const segments = meeting.content.insights || (meeting.content.card ? [{card: meeting.content.card}] : []);
-        for (const segment of segments) {
-          const insight = segment.insight || meeting.content.insight;
+        for (const segment of byProvider[selected]) {
+          const insight = segment.insight;
           const items = heading === "KEY NOTES" ? insight?.meetingNotes : insight?.actionItems;
           if (items?.length) {
             content.append(element("h3", heading === "KEY NOTES" ? "Meeting notes" : "Follow-up tasks"));
             for (const item of items) {
               content.append(heading === "KEY NOTES" ? renderCollapsibleNote(item) : renderNote(item));
-              if (heading === "ACTION ITEMS") content.append(element("p", item.ownerDisplayName || "Owner not specified", "hint"));
+              if (heading === "ACTION ITEMS") {
+                content.append(element("p", item.ownerDisplayName || "Owner not specified", "hint"));
+                if (item.dueDate) content.append(element("p", `Due: ${item.dueDate}`, "hint"));
+              }
             }
           }
         }
-        if (!content.children.length) content.append(element("p", meeting.content.insight ? "No items were included in the Copilot insights." : "Copilot insights aren't available yet."));
+        if (!content.children.length) content.append(element("p", byProvider[selected].length ? `No items were included in the ${providerLabel(selected)} insights.` : `${providerLabel(selected)} insights aren't available yet.`));
       };
       buttons.append(button);
     }
     const transcriptButton = element("button", "Transcripts");
     transcriptButton.setAttribute("aria-pressed", "false");
     transcriptButton.onclick = () => {
+      activeContentButton = transcriptButton;
       buttons.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b === transcriptButton)));
       content.replaceChildren();
       const transcripts = meeting.content.transcripts || [];
@@ -251,8 +351,35 @@ function renderMeetings(meetings, clickup) {
       } catch (error) { showError(error.message); clickupButton.disabled = false; }
     };
     buttons.append(clickupButton);
-    article.append(buttons, content, element("p", "Generated from Microsoft 365 Copilot meeting insights.", "hint"));
-    $("#meetings").append(article);
+    if (custom) {
+      article.replaceChildren(element("h2", "Here's your meeting insights"), element("p", meeting.subject, "hint"));
+      for (const [label, field] of [["Summary", "meetingNotes"], ["Action Items", "actionItems"]]) {
+        const section = element("details", "", "custom-insight-section");
+        section.open = true;
+        section.append(element("summary", label));
+        const items = byProvider.openrouter.flatMap((segment) => segment.insight?.[field] || []);
+        if (!items.length) section.append(element("p", "No items identified."));
+        for (const item of items) {
+          section.append(renderNote(item));
+          if (field === "actionItems") {
+            section.append(element("p", `Responsible: ${item.ownerDisplayName || "Not specified"}`, "hint"));
+            if (item.dueDate) section.append(element("p", `Due: ${item.dueDate}`, "hint"));
+          }
+        }
+        article.append(section);
+      }
+      const exportActions = element("div", "", "buttons");
+      if (picker) exportActions.append(picker);
+      exportActions.append(clickupButton);
+      article.append(exportActions);
+      if (!lists.length) article.append(element("p", "Connect ClickUp and choose a List in Account settings to create tasks.", "hint"));
+      target.append(article);
+      continue;
+    }
+    article.append(buttons, content, footerLine);
+    updateProviderText();
+    updateToggle();
+    target.append(article);
     buttons.firstChild.click();
   }
 }
@@ -389,7 +516,8 @@ async function refresh(sync = false) {
       : "NoteIQ will notify you in Teams Activity when transcripts and insights are ready.";
     $("#notification-retry").hidden = !notificationError;
     $("#retry").hidden = !["ACCESS_REQUIRED", "CONNECTION_ERROR"].includes(user.status);
-    renderMeetings(meetings, clickup);
+    renderMeetings(meetings.filter((m) => m.content.source !== "upload"), clickup, user.ai_provider);
+    renderMeetings(meetings.filter((m) => m.content.source === "upload").slice(0, 1), clickup, "openrouter", true);
     renderClickUp(clickup);
     showError();
   } catch (error) { showError(error.message); }
@@ -475,3 +603,58 @@ $("#disconnect").onclick = async () => {
   await refresh();
   setInterval(() => { if (!document.hidden) refresh(); }, 15000);
 })();
+
+function selectWorkspaceTab(upload) {
+  for (const [id, selected] of [["upload", upload], ["meetings", !upload]]) {
+    const tab = $("#" + id + "-tab");
+    tab.setAttribute("aria-selected", String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    $("#" + id + "-panel").hidden = !selected;
+  }
+}
+$("#upload-tab").onclick = () => selectWorkspaceTab(true);
+$("#meetings-tab").onclick = () => selectWorkspaceTab(false);
+for (const id of ["upload", "meetings"]) {
+  $("#" + id + "-tab").onkeydown = (event) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const upload = event.key === "End" || (event.key !== "Home" && id === "meetings");
+    selectWorkspaceTab(upload);
+    $(upload ? "#upload-tab" : "#meetings-tab").focus();
+  };
+}
+$("#upload-transcript").onsubmit = async (event) => {
+  event.preventDefault();
+  const button = event.currentTarget.querySelector("button");
+  if (button.disabled) return;
+  const file = $("#upload-file").files[0];
+  if (!file) return;
+  button.disabled = true;
+  $("#upload-results").hidden = true;
+  showError();
+  $("#upload-status").textContent = "Reading transcript…";
+  try {
+    if (!/\.(txt|vtt|srt)$/i.test(file.name) || file.size > 240000) {
+      throw new Error("Choose a UTF-8 TXT, VTT or SRT file with up to 60,000 characters.");
+    }
+    let text;
+    try { text = new TextDecoder("utf-8", {fatal: true}).decode(await file.arrayBuffer()); }
+    catch { throw new Error("Save your transcript as UTF-8 text, then upload it again."); }
+    if (!text.trim() || [...text].length > 60000) throw new Error("Transcript must contain between 1 and 60,000 characters.");
+    $("#upload-status").textContent = "Generating summary and action items…";
+    await api("/api/transcripts/upload", {
+      subject: $("#upload-title").value.trim(), filename: file.name, text
+    }, 90000);
+    $("#upload-status").textContent = "Saved. Your summary, action items and transcript appear below.";
+    $("#upload-results").hidden = false;
+    previousUploads = "";
+    await refresh();
+  } catch (error) {
+    $("#upload-status").textContent = "Analysis did not complete. Your selected file is still available to retry.";
+    showError(error.message.replaceAll("OpenRouter", "The AI service"));
+  } finally { button.disabled = false; }
+};
+$("#upload-results").onclick = () => {
+  $("#custom-transcripts").scrollIntoView({behavior: "smooth", block: "start"});
+  refresh();
+};

@@ -7,6 +7,7 @@ import pytest
 from microsoft_teams.cards import AdaptiveCard
 
 from app.adaptive_cards import build_card
+from app.config import settings
 from app.insights import process_insight
 from app.models import Insight, InsightEvent
 
@@ -26,6 +27,25 @@ def test_preserves_copilot_content_and_missing_owner(samples, store):
     assert "Launch date remains unchanged." in text
     assert "Submit the revised commercial proposal." in text
     assert "dueDate" not in text
+
+
+def test_action_item_due_date_only_rendered_when_present():
+    with_due = build_card(
+        Insight(
+            id="i",
+            actionItems=[
+                {"text": "Send proposal", "ownerDisplayName": "Ada", "dueDate": "2026-09-20"}
+            ],
+        ),
+        "Budget",
+    )
+    assert "Due: 2026-09-20" in json.dumps(with_due)
+
+    without_due = build_card(
+        Insight(id="i", actionItems=[{"text": "Send proposal", "ownerDisplayName": "Ada"}]),
+        "Budget",
+    )
+    assert "Due:" not in json.dumps(without_due)
 
 
 def test_empty_card_not_sent():
@@ -80,6 +100,17 @@ async def test_disconnected_user_is_skipped(samples, store):
     store.disconnect(str(event.user_id))
     assert await process_insight(event, graph, store) == "SKIPPED_NOT_ENROLLED"
     graph.request.assert_not_awaited()
+
+
+async def test_openrouter_provider_skips_copilot_insight_processing(monkeypatch, samples, store):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setenv("OPENROUTER_MODEL", "test/model")
+    monkeypatch.setenv("AI_PROVIDER", "openrouter")
+    settings.cache_clear()
+    graph, store, event = clients(samples, store)
+    assert await process_insight(event, graph, store) == "SKIPPED_PROVIDER_DISABLED"
+    graph.request.assert_not_awaited()
+    assert store.meetings(str(event.user_id)) == []
 
 
 @pytest.mark.parametrize("code", [404, 429, 500, 503])

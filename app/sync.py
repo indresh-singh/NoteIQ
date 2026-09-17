@@ -7,6 +7,7 @@ from urllib.parse import quote
 
 import httpx
 
+from app.config import settings
 from app.meetings import meeting_filter
 from app.models import InsightEvent, MeetingSync, TranscriptEvent, UserSync
 
@@ -18,7 +19,7 @@ def queue_sync(store, user_id, *, discover=False):
     payloads = [
         MeetingSync(user_id=user_id, meeting_id=m["content"]["meeting_id"]).model_dump_json()
         for m in meetings
-        if m["created"] >= time.time() - 7 * 86400
+        if m["created"] >= time.time() - 7 * 86400 and m["content"].get("source") != "upload"
     ]
     if discover:
         payloads.append(UserSync(user_id=user_id).model_dump_json())
@@ -108,10 +109,10 @@ async def sync_meeting(event, graph, store):
         return "SKIPPED_UNKNOWN_MEETING"
     path = f"/users/{user_id}/onlineMeetings/{quote(event.meeting_id, safe='')}"
     failed = False
-    for kind, resource, model, field in (
-        ("transcript", path + "/transcripts", TranscriptEvent, "transcript_id"),
-        ("insight", "/copilot" + path + "/aiInsights", InsightEvent, "insight_id"),
-    ):
+    kinds = [("transcript", path + "/transcripts", TranscriptEvent, "transcript_id")]
+    if settings().ai_provider == "copilot":
+        kinds.append(("insight", "/copilot" + path + "/aiInsights", InsightEvent, "insight_id"))
+    for kind, resource, model, field in kinds:
         try:
             known = {item[kind]["id"] for item in saved.get(kind + "s", [])}
             known.update(item[kind].get("source_id") for item in saved.get(kind + "s", []))

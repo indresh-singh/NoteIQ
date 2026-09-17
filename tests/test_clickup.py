@@ -10,6 +10,7 @@ class FakeClickUp:
             clickup_redirect_uri="https://noteiq.test/clickup/callback",
         )
         self.created = []
+        self.deleted_task_ids = set()
 
     def encrypt(self, token):
         return "encrypted:" + token
@@ -41,6 +42,10 @@ class FakeClickUp:
     async def create_task(self, token, list_id, name, description):
         self.created.append((token, list_id, name, description))
         return {"id": str(len(self.created)), "url": "https://app.clickup.com/t/1"}
+
+    async def task_exists(self, token, task_id):
+        assert token == "clickup-token"
+        return task_id not in self.deleted_task_ids
 
 
 def connect(client, store, headers):
@@ -102,6 +107,12 @@ def test_clickup_oauth_list_and_task_export_are_private(client, store, signed_in
     )
     assert response.json() == {"created": 3, "skipped": 0}
     assert fake.created[-1][1] == "456"
+
+    # Deleting a task in ClickUp itself shouldn't leave it stuck as "already sent":
+    # the next export should notice it's gone and re-create it.
+    fake.deleted_task_ids.add("1")
+    response = client.post(f"/api/meetings/{meeting_id}/clickup", headers=signed_in, json={})
+    assert response.json() == {"created": 1, "skipped": 2}
 
     assert (
         client.post(

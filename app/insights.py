@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from app.activity import INSIGHTS_READY, queue_notification
 from app.adaptive_cards import build_card
+from app.config import settings
 from app.graph_client import GraphClient, retryable
 from app.models import Insight, InsightEvent, MeetingSync
 from app.store import Store
@@ -21,6 +22,9 @@ async def process_insight(event: InsightEvent, graph: GraphClient, store: Store)
         user = store.user(user_id)
         if not user or not user["enabled"]:
             status = "SKIPPED_NOT_ENROLLED"
+            return status
+        if settings().ai_provider != "copilot":
+            status = "SKIPPED_PROVIDER_DISABLED"
             return status
         meeting = await graph.request("GET", event.meeting_path)
         organizer = (meeting.get("participants") or {}).get("organizer") or {}
@@ -44,6 +48,7 @@ async def process_insight(event: InsightEvent, graph: GraphClient, store: Store)
                         "insight": {
                             **insight.model_dump(mode="json"),
                             "source_id": event.insight_id,
+                            "provider": "copilot",
                         },
                         "card": card,
                     },
