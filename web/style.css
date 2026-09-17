@@ -6,9 +6,9 @@
 
 .note-collapsible{padding:12px 0;border-bottom:1px solid var(--line)}
 .note-collapsible:last-child{border-bottom:none}
-.note-collapsible summary{cursor:pointer;font-weight:600}
+.note-collapsible summary{cursor:pointer;font-weight:700;font-size:14px}
 .note-collapsible summary::marker{color:var(--accent)}
-.note-collapsible p{margin:10px 0 0}
+.note-collapsible p{margin:10px 0 0;font-size:13px;font-weight:700}
 .note-collapsible details{margin:8px 0 0 18px}
 
 #clickup-settings{margin:20px 0 24px;padding:26px 28px;border:1px solid var(--line);border-radius:14px;background:var(--paper)}
