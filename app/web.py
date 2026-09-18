@@ -8,6 +8,7 @@ import logging
 import secrets
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
+from typing import Literal
 from urllib.parse import urlencode
 from uuid import UUID
 
@@ -48,6 +49,7 @@ class ClickUpList(BaseModel):
 
 class ClickUpExport(BaseModel):
     list_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9]+$", max_length=64)
+    provider: Literal["copilot", "openrouter"] | None = None
 
 
 class ClickUpConnect(BaseModel):
@@ -96,8 +98,14 @@ def clickup_result(error: str = "", in_teams: bool = False) -> HTMLResponse:
     )
 
 
-def actions(content: dict) -> list[dict]:
+def actions(content: dict, provider: str | None = None) -> list[dict]:
     insights = content.get("insights") or [{"insight": content.get("insight", {})}]
+    if provider:
+        insights = [
+            item
+            for item in insights
+            if (item.get("insight", {}).get("provider") or "copilot") == provider
+        ]
     return [
         action
         for item in insights
@@ -414,7 +422,7 @@ def create_app(
         try:
             token = client.decrypt(connection["token"])
             created = skipped = 0
-            for action in actions(meeting["content"]):
+            for action in actions(meeting["content"], body.provider):
                 raw = "|".join(
                     (
                         list_id,

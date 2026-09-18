@@ -138,6 +138,53 @@ def test_clickup_oauth_list_and_task_export_are_private(client, store, signed_in
     }
 
 
+def test_clickup_export_scopes_to_the_requested_provider(client, store, signed_in, samples):
+    fake = connect(client, store, signed_in)
+    client.post("/api/clickup/lists", headers=signed_in, json={"list_id": "123"})
+    store.save_meeting(
+        USER,
+        "Budget",
+        {
+            "meeting_id": "meeting",
+            "insight": {**samples["insight"], "provider": "copilot"},
+        },
+    )
+    store.save_meeting(
+        USER,
+        "Budget",
+        {
+            "meeting_id": "meeting",
+            "insight": {
+                "id": "openrouter:t1",
+                "actionItems": [{"text": "OpenRouter task", "ownerDisplayName": "Ada"}],
+                "provider": "openrouter",
+            },
+        },
+    )
+    meeting_id = store.meetings(USER)[0]["id"]
+
+    response = client.post(
+        f"/api/meetings/{meeting_id}/clickup",
+        headers=signed_in,
+        json={"provider": "openrouter"},
+    )
+    assert response.json() == {"created": 1, "skipped": 0}
+    assert len(fake.created) == 1
+    assert "OpenRouter task" in fake.created[0][3]
+
+    response = client.post(
+        f"/api/meetings/{meeting_id}/clickup",
+        headers=signed_in,
+        json={"provider": "copilot"},
+    )
+    assert response.json() == {"created": 3, "skipped": 0}
+    assert len(fake.created) == 4
+
+    # No provider filter: back to the original aggregate-everything behavior.
+    response = client.post(f"/api/meetings/{meeting_id}/clickup", headers=signed_in, json={})
+    assert response.json() == {"created": 0, "skipped": 4}
+
+
 def test_clickup_requires_connection(client, store, signed_in):
     store.save_meeting(USER, "Mine", {"meeting_id": "mine"})
     assert (

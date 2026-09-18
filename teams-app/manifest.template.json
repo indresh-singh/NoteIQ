@@ -1,21 +1,21 @@
 {
   "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.19/MicrosoftTeams.schema.json",
   "manifestVersion": "1.19",
-  "version": "1.3.4",
+  "version": "1.3.5",
   "id": "${TEAMS_APP_ID}",
   "developer": {
-    "name": "NoteIQ",
+    "name": "Technology Innovation Institute (TII)",
     "websiteUrl": "${PUBLIC_URL}",
     "privacyUrl": "${PUBLIC_URL}/static/privacy.html",
     "termsOfUseUrl": "${PUBLIC_URL}/static/terms.html"
   },
   "name": {
     "short": "NoteIQ",
-    "full": "NoteIQ meeting follow-ups"
+    "full": "NoteIQ by Technology Innovation Institute"
   },
   "description": {
-    "short": "Your meeting transcripts, Copilot notes and action items.",
-    "full": "Connect your Microsoft 365 work account to view transcripts, Copilot notes and action items for meetings you organize. NoteIQ notifies you in Teams Activity when transcripts and insights are available. Requires a Microsoft 365 Copilot license and administrator-approved meeting access."
+    "short": "TII's meeting transcripts, Copilot notes and action items.",
+    "full": "NoteIQ by Technology Innovation Institute (TII) connects to your Microsoft 365 work account to show transcripts, Copilot notes and action items for meetings you organize. NoteIQ notifies you in Teams Activity when transcripts and insights are available. Requires a Microsoft 365 Copilot license and administrator-approved meeting access."
   },
   "icons": {
     "color": "color.png",

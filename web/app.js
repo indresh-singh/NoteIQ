@@ -1,7 +1,9 @@
 const $ = (selector) => document.querySelector(selector);
-function hasActionItems(content) {
+function hasActionItems(content, provider) {
   const insights = content.insights || (content.insight ? [{insight: content.insight}] : []);
-  return insights.some((item) => (item.insight?.actionItems || []).some((a) => a.title || a.text));
+  return insights
+    .filter((item) => !provider || (item.insight?.provider || "copilot") === provider)
+    .some((item) => (item.insight?.actionItems || []).some((a) => a.title || a.text));
 }
 let token = "";
 let inTeams = false;
@@ -239,6 +241,7 @@ function renderMeetings(meetings, clickup, aiProvider, custom = false) {
       selected = provider;
       updateProviderText();
       updateToggle();
+      updateExportVisibility();
       if (activeContentButton) activeContentButton.click();
     }
     copilotState.onclick = () => selectProvider("copilot");
@@ -323,7 +326,6 @@ function renderMeetings(meetings, clickup, aiProvider, custom = false) {
     if (lists.length > 1) {
       picker = element("select", "", "clickup-list-picker");
       picker.dataset.clickup = "true";
-      picker.dataset.hasActions = String(hasActionItems(meeting.content));
       picker.hidden = true;
       for (const item of lists) {
         const option = element("option", item.list_name);
@@ -335,22 +337,35 @@ function renderMeetings(meetings, clickup, aiProvider, custom = false) {
     }
     const clickupButton = element("button", "", "clickup-button");
     clickupButton.dataset.clickup = "true";
-    clickupButton.dataset.hasActions = String(hasActionItems(meeting.content));
     clickupButton.hidden = true;
     const clickupIcon = document.createElement("img");
     clickupIcon.src = "/static/clickup.svg";
     clickupIcon.alt = "";
-    const clickupLabel = element("span", "Send action items to ClickUp");
+    const clickupDefaultLabel = "Send action items to ClickUp";
+    const clickupLabel = element("span", clickupDefaultLabel);
     clickupButton.append(clickupIcon, clickupLabel);
+    // Export only ever sends whichever provider's items are on screen right
+    // now, so the count on the button always matches what was just clicked.
+    function updateExportVisibility() {
+      const visible = lists.length > 0 && hasActionItems(meeting.content, selected);
+      clickupButton.dataset.hasActions = String(visible);
+      clickupButton.hidden = !visible;
+      if (picker) {
+        picker.dataset.hasActions = String(visible);
+        picker.hidden = !visible;
+      }
+      clickupLabel.textContent = clickupDefaultLabel;
+    }
     clickupButton.onclick = async () => {
       clickupButton.disabled = true;
       try {
-        const body = picker ? {list_id: picker.value} : {};
+        const body = {provider: selected, ...(picker ? {list_id: picker.value} : {})};
         const result = await api(`/api/meetings/${meeting.id}/clickup`, body);
         clickupLabel.textContent = result.created ? `${result.created} task${result.created === 1 ? "" : "s"} sent` : "Already sent";
       } catch (error) { showError(error.message); clickupButton.disabled = false; }
     };
     buttons.append(clickupButton);
+    updateExportVisibility();
     if (custom) {
       article.replaceChildren(element("h2", "Here's your meeting insights"), element("p", meeting.subject, "hint"));
       for (const [label, field] of [["Summary", "meetingNotes"], ["Action Items", "actionItems"]]) {

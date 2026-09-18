@@ -27,6 +27,9 @@ def test_package_uses_public_tab_and_contains_no_bot_or_secrets(config, tmp_path
         assert manifest["$schema"].startswith("https://developer.microsoft.com/")
         assert manifest["staticTabs"][0]["contentUrl"] == config.public_url + "/"
         assert manifest["validDomains"] == ["noteiq.test"]
+        assert manifest["developer"]["name"] == "Technology Innovation Institute (TII)"
+        assert manifest["name"]["full"] == "NoteIQ by Technology Innovation Institute"
+        assert "Technology Innovation Institute (TII)" in manifest["description"]["full"]
         assert config.graph_secret.get_secret_value() not in content
         for name, size in (("color.png", 192), ("outline.png", 32)):
             assert struct.unpack(">II", archive.read(name)[16:24]) == (size, size)
