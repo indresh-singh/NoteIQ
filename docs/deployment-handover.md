@@ -99,8 +99,8 @@ Set these normal Container App environment variables:
 | `TEAMS_APP_ID` | Stable Teams package ID; normally the same as `GRAPH_CLIENT_ID` |
 | `PUBLIC_BASE_URL` | `https://noteiq.salmontree-16ed39aa.uaenorth.azurecontainerapps.io` |
 | `CLICKUP_CLIENT_ID` | Optional ClickUp OAuth client ID |
-| `AI_PROVIDER` | `copilot` (default) or `openrouter` — selects which service generates meeting summaries and action items |
-| `OPENROUTER_MODEL` | Required when `AI_PROVIDER=openrouter`: the OpenRouter model id, e.g. `openai/gpt-4o-mini` |
+| `OPENAI_API_KEY` | Optional; enables ChatGPT Enterprise / OpenAI meeting summaries and takes precedence over OpenRouter |
+| `OPENROUTER_MODEL` | Required with `OPENROUTER_API_KEY`: the OpenRouter model id, e.g. `openai/gpt-4o-mini` |
 | `NOTEIQ_ROLE` | `all` (default) runs the web tier and the background worker in one process. `web` and `worker` split them into separate Container Apps; see [scaling](scaling.md) |
 | `NOTEIQ_JOB_CONCURRENCY` | How many queued jobs the worker runs at once. Default `4`, maximum `32` |
 | `NOTEIQ_MEETING_RETENTION_DAYS` | Optional. Unset means saved meetings are kept until the user disconnects. Setting it deletes meetings and their transcripts once they are older than this many days (minimum `7`) |
@@ -114,7 +114,7 @@ Set protected values as Container App secrets and reference them from variables:
 | `noteiq-database-url` | `NOTEIQ_DATABASE_URL=secretref:noteiq-database-url` | PostgreSQL connection string |
 | `clickup-client-secret` | `CLICKUP_CLIENT_SECRET=secretref:clickup-client-secret` | Optional ClickUp OAuth secret |
 | `clickup-token-key` | `CLICKUP_TOKEN_KEY=secretref:clickup-token-key` | Optional Fernet key for encrypted ClickUp tokens |
-| `openrouter-api-key` | `OPENROUTER_API_KEY=secretref:openrouter-api-key` | Required when `AI_PROVIDER=openrouter` |
+| `openrouter-api-key` | `OPENROUTER_API_KEY=secretref:openrouter-api-key` | Required with `OPENROUTER_MODEL` when OpenRouter is used |
 
 The PostgreSQL URL format is:
 

@@ -2,7 +2,10 @@
 # Deploy NoteIQ to the DAIO development Azure Container App.
 #
 # Run from the repository root:
-#   bash scripts/deploy_daio.sh UNIQUE_TAG
+#   bash scripts/deploy_daio.sh [UNIQUE_TAG]
+#
+# Tags are immutable deployment identities: this script rejects a tag that is
+# already present in ACR or already names a Container App revision.
 #
 # The Graph client secret must already be configured on the Container App as a
 # secret reference. This script intentionally never accepts or prints it.
@@ -53,8 +56,20 @@ readonly min_replicas="${MIN_REPLICAS:-1}"
 readonly max_replicas="${MAX_REPLICAS:-10}"
 
 tag="${1:-}"
+generated_tag=false
+if [[ -z "$tag" ]]; then
+  # 7 + 12 + 7 + 4 = 30 characters: valid under the 32-character tag rule.
+  # The timestamp and source revision make deployments easy to trace; the
+  # random suffix prevents a collision between concurrent deployments of the
+  # same commit in the same second.
+  timestamp="$(date -u +%y%m%d%H%M%S)"
+  commit="$(git rev-parse --short=7 HEAD 2>/dev/null || printf 'nogit00')"
+  nonce="$(od -An -N2 -tx1 /dev/urandom | tr -d '[:space:]')"
+  tag="release${timestamp}${commit}${nonce}"
+  generated_tag=true
+fi
 if [[ ! "$tag" =~ ^[a-z][a-z0-9]{0,31}$ ]]; then
-  echo "Usage: bash scripts/deploy_daio.sh UNIQUE_TAG" >&2
+  echo "Usage: bash scripts/deploy_daio.sh [UNIQUE_TAG]" >&2
   echo "The tag must start with a lowercase letter and contain at most 32 lowercase letters/numbers." >&2
   exit 2
 fi
@@ -124,6 +139,41 @@ if [[ -z "$graph_secret_ref" ]]; then
 fi
 
 readonly image="${acr_server}/${image_repository}:${tag}"
+readonly revision_name="${container_app}--${tag}"
+
+# A Container App revision is immutable. Reusing the image tag and revision
+# suffix can leave the old healthy revision serving traffic even after Docker
+# has pushed new bytes under that mutable tag. Check both places before the
+# build, so this command cannot report an old revision as a new deployment.
+if az containerapp revision show \
+  --name "$container_app" \
+  --resource-group "$resource_group" \
+  --subscription "$subscription_id" \
+  --revision "$revision_name" \
+  --output none >/dev/null 2>&1; then
+  echo "Refusing to reuse existing Container App revision: $revision_name" >&2
+  echo "Choose a new UNIQUE_TAG, for example: release0922a" >&2
+  exit 12
+fi
+
+# The revision check is the deployment safety boundary. This ACR check also
+# prevents a tag from being silently moved before it ever reaches this app.
+# A missing repository is expected before the first deployment.
+existing_tag="$(az acr repository show-tags \
+  --name "$acr_name" \
+  --repository "$image_repository" \
+  --subscription "$subscription_id" \
+  --query "[?@=='${tag}'] | [0]" \
+  --output tsv 2>/dev/null || true)"
+if [[ "$existing_tag" == "$tag" ]]; then
+  echo "Refusing to reuse existing ACR image tag: $image" >&2
+  echo "Choose a new UNIQUE_TAG, for example: release0922a" >&2
+  exit 13
+fi
+
+if [[ "$generated_tag" == true ]]; then
+  echo "Generated deployment tag: $tag"
+fi
 echo "Tenant:        $tenant_id"
 echo "Subscription:  $subscription_id"
 echo "Resource group: $resource_group"
@@ -179,7 +229,6 @@ az containerapp update \
   --only-show-errors \
   --output none
 
-readonly revision_name="${container_app}--${tag}"
 health=""
 for _ in {1..30}; do
   health="$(az containerapp revision show \

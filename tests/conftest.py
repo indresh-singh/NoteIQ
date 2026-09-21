@@ -17,6 +17,15 @@ SECRET = "sample-client-state-for-local-tests-only"
 
 @pytest.fixture(autouse=True)
 def config(monkeypatch, tmp_path):
+    # Keep provider tests independent from keys configured on the developer's machine.
+    for key in (
+        "OPENAI_API_KEY",
+        "OPENAI_MODEL",
+        "OPENAI_MIN_REQUEST_INTERVAL_SECONDS",
+        "OPENROUTER_API_KEY",
+        "OPENROUTER_MODEL",
+    ):
+        monkeypatch.delenv(key, raising=False)
     values = {
         "AZURE_TENANT_ID": TENANT,
         "GRAPH_CLIENT_ID": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",

@@ -134,10 +134,9 @@ async def test_sync_transient_http_failures_keep_original_error_for_retry(
     assert "sync_status" not in store.find_meeting(USER, "m")
 
 
-async def test_copilot_insight_sync_runs_regardless_of_ai_provider(monkeypatch, store, graph):
+async def test_copilot_insight_sync_runs_with_external_summary_service(monkeypatch, store, graph):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     monkeypatch.setenv("OPENROUTER_MODEL", "test/model")
-    monkeypatch.setenv("AI_PROVIDER", "openrouter")
     settings.cache_clear()
     store.save_meeting(USER, "Meeting", {"meeting_id": "m"})
     graph.list.side_effect = [[{"id": "t"}], [{"id": "i"}]]

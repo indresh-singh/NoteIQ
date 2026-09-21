@@ -30,12 +30,11 @@ async def test_create_missing_subscription(config, store):
     assert call.kwargs["json"]["lifecycleNotificationUrl"].endswith("/api/graph/lifecycle")
 
 
-async def test_copilot_insight_subscription_created_regardless_of_ai_provider(
+async def test_copilot_insight_subscription_created_with_external_summary_service(
     monkeypatch, config, store
 ):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     monkeypatch.setenv("OPENROUTER_MODEL", "test/model")
-    monkeypatch.setenv("AI_PROVIDER", "openrouter")
     settings.cache_clear()
     graph = AsyncMock()
     graph.list.return_value = []

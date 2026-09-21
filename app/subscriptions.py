@@ -78,8 +78,8 @@ async def renew_subscriptions(graph: GraphClient, store: Store, force: bool = Fa
                     raise
     for user_id in sorted(users):
         errors = []
-        # Copilot insight subscriptions run regardless of AI_PROVIDER: Copilot and
-        # OpenRouter insights are captured side by side, not as an either/or choice.
+        # Copilot insight subscriptions always run: Copilot and external-service
+        # insights are captured side by side.
         resources = [
             f"copilot/users/{user_id}/onlineMeetings/getAllAiInsights",
             f"users/{user_id}/onlineMeetings/getAllTranscripts",

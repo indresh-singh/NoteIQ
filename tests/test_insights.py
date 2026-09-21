@@ -102,10 +102,9 @@ async def test_disconnected_user_is_skipped(samples, store):
     graph.request.assert_not_awaited()
 
 
-async def test_copilot_insight_is_processed_regardless_of_ai_provider(monkeypatch, samples, store):
+async def test_copilot_insight_is_processed_with_external_summary_service(monkeypatch, samples, store):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     monkeypatch.setenv("OPENROUTER_MODEL", "test/model")
-    monkeypatch.setenv("AI_PROVIDER", "openrouter")
     settings.cache_clear()
     graph, store, event = clients(samples, store)
     assert await process_insight(event, graph, store) == "SAVED"

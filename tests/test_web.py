@@ -43,8 +43,8 @@ def callback(client, state):
     return re.search(r'data-code="([^"]+)"', response.text).group(1)
 
 
-def test_me_reports_the_active_ai_provider(client, store, signed_in):
-    assert client.get("/api/me", headers=signed_in).json()["ai_provider"] == "copilot"
+def test_me_reports_the_active_summary_provider(client, store, signed_in):
+    assert client.get("/api/me", headers=signed_in).json()["summary_provider"] == "copilot"
 
 
 def test_login_enrolls_verified_user_and_starts_updates(client, monkeypatch):

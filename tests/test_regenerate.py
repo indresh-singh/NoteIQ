@@ -6,7 +6,6 @@ from tests.conftest import USER
 def enable_openrouter(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     monkeypatch.setenv("OPENROUTER_MODEL", "test/model")
-    monkeypatch.setenv("AI_PROVIDER", "openrouter")
     settings.cache_clear()
 
 
@@ -55,11 +54,11 @@ def test_regenerate_replaces_openrouter_insight(monkeypatch, client, store, sign
     assert insights[0]["insight"]["provider"] == "openrouter"
 
 
-def test_regenerate_requires_openrouter_to_be_configured(client, store, signed_in):
+def test_regenerate_requires_an_external_summary_service(client, store, signed_in):
     meeting_id = seed_meeting_with_transcript(store)
     response = client.post(f"/api/meetings/{meeting_id}/regenerate", headers=signed_in, json={})
     assert response.status_code == 409
-    assert "OPENROUTER" in response.json()["detail"]
+    assert "AI provider" in response.json()["detail"]
 
 
 def test_regenerate_works_under_the_default_copilot_provider(monkeypatch, client, store, signed_in):

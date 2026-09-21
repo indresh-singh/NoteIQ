@@ -168,11 +168,13 @@ function renderCollapsibleNote(note) {
 }
 
 function providerLabel(provider) {
-  return provider === "openrouter" ? "OpenRouter" : "Microsoft 365 Copilot";
+  if (provider === "openai") return "ChatGPT Enterprise";
+  if (provider === "openrouter") return "OpenRouter";
+  return "Microsoft 365 Copilot";
 }
 
-function renderMeetings(meetings, clickup, aiProvider, custom = false) {
-  const signature = JSON.stringify(meetings) + aiProvider + JSON.stringify(clickup);
+function renderMeetings(meetings, clickup, summaryProvider, custom = false) {
+  const signature = JSON.stringify(meetings) + summaryProvider + JSON.stringify(clickup);
   if (signature === (custom ? previousUploads : previousMeetings)) return;
   if (custom) previousUploads = signature;
   else previousMeetings = signature;
@@ -185,18 +187,19 @@ function renderMeetings(meetings, clickup, aiProvider, custom = false) {
 
     // Every insight segment carries its own provider tag; group them so the
     // toggle below can show exactly one provider's data at a time instead of
-    // merging Copilot's and OpenRouter's notes/action items together.
+    // merging Copilot's and the configured external service's notes/action items together.
     const segments = meeting.content.insights || (meeting.content.insight ? [{insight: meeting.content.insight}] : []);
-    const providerOf = (segment) => (segment.insight?.provider === "openrouter" ? "openrouter" : "copilot");
+    const externalProvider = summaryProvider === "openai" ? "openai" : "openrouter";
+    const providerOf = (segment) => segment.insight?.provider === externalProvider ? externalProvider : "copilot";
     const byProvider = {
       copilot: segments.filter((segment) => providerOf(segment) === "copilot"),
-      openrouter: segments.filter((segment) => providerOf(segment) === "openrouter"),
+      [externalProvider]: segments.filter((segment) => providerOf(segment) === externalProvider),
     };
     const hasTranscript = (meeting.content.transcripts || []).length > 0;
-    const showToggle = byProvider.copilot.length > 0 || byProvider.openrouter.length > 0 || hasTranscript;
-    let selected = byProvider.copilot.length && !byProvider.openrouter.length ? "copilot"
-      : byProvider.openrouter.length && !byProvider.copilot.length ? "openrouter"
-      : aiProvider === "openrouter" ? "openrouter" : "copilot";
+    const showToggle = byProvider.copilot.length > 0 || byProvider[externalProvider].length > 0 || hasTranscript;
+    let selected = byProvider.copilot.length && !byProvider[externalProvider].length ? "copilot"
+      : byProvider[externalProvider].length && !byProvider.copilot.length ? externalProvider
+      : summaryProvider === externalProvider ? externalProvider : "copilot";
 
     const dateLine = element("time", "");
     const hintLine = element("p", "", "hint");
@@ -227,24 +230,24 @@ function renderMeetings(meetings, clickup, aiProvider, custom = false) {
     providerStates.setAttribute("role", "radiogroup");
     providerStates.setAttribute("aria-label", "Meeting insight source");
     const copilotState = element("button", "Copilot", "provider-state");
-    const openrouterState = element("button", "OpenRouter", "provider-state");
-    for (const state of [copilotState, openrouterState]) {
+    const externalState = element("button", providerLabel(externalProvider), "provider-state");
+    for (const state of [copilotState, externalState]) {
       state.type = "button";
       state.setAttribute("role", "radio");
     }
-    providerStates.append(copilotState, openrouterState);
+    providerStates.append(copilotState, externalState);
     const regenerateButton = element("button", "", "regenerate-button");
     regenerateButton.append(element("span", "⟳", "regenerate-icon"), document.createTextNode(" Regenerate"));
     providerToggle.append(providerStates, regenerateButton);
     if (showToggle && !custom) article.append(providerToggle);
 
     function updateToggle() {
-      const openrouterSelected = selected === "openrouter";
-      copilotState.setAttribute("aria-checked", String(!openrouterSelected));
-      openrouterState.setAttribute("aria-checked", String(openrouterSelected));
-      copilotState.tabIndex = openrouterSelected ? -1 : 0;
-      openrouterState.tabIndex = openrouterSelected ? 0 : -1;
-      regenerateButton.hidden = !openrouterSelected;
+      const externalSelected = selected === externalProvider;
+      copilotState.setAttribute("aria-checked", String(!externalSelected));
+      externalState.setAttribute("aria-checked", String(externalSelected));
+      copilotState.tabIndex = externalSelected ? -1 : 0;
+      externalState.tabIndex = externalSelected ? 0 : -1;
+      regenerateButton.hidden = !externalSelected;
     }
 
     function selectProvider(provider) {
@@ -255,13 +258,13 @@ function renderMeetings(meetings, clickup, aiProvider, custom = false) {
       if (activeContentButton) activeContentButton.click();
     }
     copilotState.onclick = () => selectProvider("copilot");
-    openrouterState.onclick = () => selectProvider("openrouter");
+    externalState.onclick = () => selectProvider(externalProvider);
     providerStates.onkeydown = (event) => {
       if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
       event.preventDefault();
-      const provider = event.key === "ArrowRight" || event.key === "End" ? "openrouter" : "copilot";
+      const provider = event.key === "ArrowRight" || event.key === "End" ? externalProvider : "copilot";
       selectProvider(provider);
-      (provider === "openrouter" ? openrouterState : copilotState).focus();
+      (provider === externalProvider ? externalState : copilotState).focus();
     };
     regenerateButton.onclick = async () => {
       regenerateButton.disabled = true;
@@ -561,8 +564,8 @@ async function refresh(sync = false) {
       : "NoteIQ will notify you once in Teams Activity when a meeting's AI insights are ready.";
     $("#notification-retry").hidden = !notificationError;
     $("#retry").hidden = !["ACCESS_REQUIRED", "CONNECTION_ERROR"].includes(user.status);
-    renderMeetings(meetings.filter((m) => m.content.source !== "upload"), clickup, user.ai_provider);
-    renderMeetings(meetings.filter((m) => m.content.source === "upload").slice(0, 1), clickup, "openrouter", true);
+    renderMeetings(meetings.filter((m) => m.content.source !== "upload"), clickup, user.summary_provider);
+    renderMeetings(meetings.filter((m) => m.content.source === "upload").slice(0, 1), clickup, user.summary_provider, true);
     renderClickUp(clickup);
     showError();
   } catch (error) { showError(error.message); }

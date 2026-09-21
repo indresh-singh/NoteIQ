@@ -28,10 +28,11 @@ from app.graph_client import GraphClient
 from app.models import InsightEvent, TranscriptEvent, UserSync, parse_event
 from app.notifications import validate_notifications
 from app.observability import log_context, safe_correlation_id
+from app.openai import OpenAI
 from app.openrouter import MAX_TRANSCRIPT_CHARS, OpenRouter
 from app.store import Store, digest
 from app.subscriptions import resource_owner
-from app.transcripts import meeting_transcript_text, summarize_with_openrouter
+from app.transcripts import meeting_transcript_text, summarize_with_ai
 from app.worker import run_worker
 
 log = logging.getLogger(__name__)
@@ -158,13 +159,13 @@ def create_app(
             )
             log.info(
                 "Application startup complete role=%s background_requested=%s worker_started=%s "
-                "storage=%s clickup_enabled=%s openrouter_enabled=%s duration_ms=%d",
+                "storage=%s clickup_enabled=%s summary_provider=%s duration_ms=%d",
                 app.state.config.role,
                 background,
                 task is not None,
                 "postgresql" if app.state.config.database_url else "sqlite",
                 app.state.config.clickup_enabled,
-                app.state.config.openrouter_enabled,
+                app.state.config.summary_provider,
                 (time.monotonic() - startup_started) * 1000,
             )
             yield
@@ -416,7 +417,7 @@ def create_app(
         return {
             **{key: user[key] for key in ("id", "name", "status")},
             "notifications": "DELIVERY_ERROR" if failed else "READY",
-            "ai_provider": request.app.state.config.ai_provider,
+            "summary_provider": request.app.state.config.summary_provider,
             "clickup": {
                 "available": request.app.state.clickup is not None,
                 "connected": bool(request.app.state.store.clickup(user["id"])),
@@ -683,17 +684,16 @@ def create_app(
         body: CustomTranscript, request: Request, user: dict = Depends(current_user)
     ):
         config = settings()
-        if not config.openrouter_enabled:
-            raise HTTPException(409, "Configure OpenRouter to analyze uploaded transcripts.")
+        if not config.external_ai_enabled:
+            raise HTTPException(409, "Configure the selected AI provider to analyze uploaded transcripts.")
         if not body.filename.lower().endswith((".txt", ".vtt", ".srt")):
             raise HTTPException(400, "Upload a UTF-8 .txt, .vtt or .srt file.")
         if not body.subject.strip() or not body.text.strip() or "\x00" in body.text:
             raise HTTPException(400, "Provide a title and a non-empty text transcript.")
         meeting_key = "upload:" + secrets.token_hex(16)
         try:
-            insight = await OpenRouter(config).summarize(
-                meeting_key, body.subject.strip(), body.text
-            )
+            provider = OpenAI(config) if config.summary_provider == "openai" else OpenRouter(config)
+            insight = await provider.summarize(meeting_key, body.subject.strip(), body.text)
         except ValueError as error:
             log.warning(
                 "Transcript upload analysis failed user=%s filename_extension=%s "
@@ -706,9 +706,10 @@ def create_app(
                 exc_info=True,
             )
             raise HTTPException(502, str(error)) from None
-        card = build_card(insight, body.subject.strip(), source="OpenRouter")
+        provider_name = "OpenAI" if config.summary_provider == "openai" else "OpenRouter"
+        card = build_card(insight, body.subject.strip(), source=provider_name)
         if card is None:
-            raise HTTPException(502, "OpenRouter returned no usable notes. Please try again.")
+            raise HTTPException(502, "The AI provider returned no usable notes. Please try again.")
         store = request.app.state.store
         local_id = store.save_transcript(user["id"], meeting_key, meeting_key, body.text)
         if local_id is None:
@@ -724,7 +725,10 @@ def create_app(
                     "local_id": local_id,
                     "createdDateTime": datetime.now(timezone.utc).isoformat(),
                 },
-                "insight": {**insight.model_dump(mode="json"), "provider": "openrouter"},
+                "insight": {
+                    **insight.model_dump(mode="json"),
+                    "provider": config.summary_provider,
+                },
                 "card": card,
             },
         )
@@ -739,9 +743,9 @@ def create_app(
         meeting = store.meeting(user["id"], meeting_id)
         if not meeting:
             raise HTTPException(404, "Meeting not found.")
-        if not settings().openrouter_enabled:
+        if not settings().external_ai_enabled:
             raise HTTPException(
-                409, "Configure OPENROUTER_API_KEY and OPENROUTER_MODEL to regenerate insights."
+                409, "Configure the selected AI provider to regenerate insights."
             )
         transcripts = meeting["content"].get("transcripts") or []
         if not transcripts:
@@ -757,9 +761,9 @@ def create_app(
             meeting_id=meeting["content"]["meeting_id"],
             transcript_id=latest["id"],
         )
-        ok = await summarize_with_openrouter(store, user["id"], event, meeting["subject"], text)
+        ok = await summarize_with_ai(store, user["id"], event, meeting["subject"], text)
         if not ok:
-            raise HTTPException(502, "OpenRouter could not generate a summary. Try again.")
+            raise HTTPException(502, "The AI provider could not generate a summary. Try again.")
         return store.meeting(user["id"], meeting_id)
 
     @app.post("/api/sync")

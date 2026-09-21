@@ -424,8 +424,8 @@ async def sync_meeting(event, graph, store):
     )
     transient_errors = []
     permanent_errors = []
-    # Copilot insight sync runs regardless of AI_PROVIDER: Copilot and OpenRouter
-    # insights are captured side by side, not as an either/or choice.
+    # Copilot insight sync always runs: Copilot and external-service insights
+    # are captured side by side.
     kinds = [
         ("transcript", path + "/transcripts", TranscriptEvent, "transcript_id"),
         ("insight", "/copilot" + path + "/aiInsights", InsightEvent, "insight_id"),

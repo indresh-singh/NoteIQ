@@ -68,6 +68,7 @@ Three limits sit outside NoteIQ and will be reached on their own schedule:
 |---|---|---|
 | `NOTEIQ_JOB_CONCURRENCY` | `4` | Jobs run at once. Raising it helps when jobs are waiting on Graph or OpenRouter, which is the usual case. It does not help with database-bound work, because store calls are synchronous |
 | `NOTEIQ_MEETING_RETENTION_DAYS` | unset | Unset keeps saved meetings until the user disconnects, which is the documented product behaviour. Setting it deletes meetings and their transcripts past that age. Minimum 7, since discovery itself looks back 7 days |
+| `OPENAI_MIN_REQUEST_INTERVAL_SECONDS` | `30` | Minimum interval between OpenAI requests in each worker process. Leave at 30 seconds (2 RPM) initially; more worker replicas multiply the total ceiling |
 
 Finished jobs are pruned hourly without configuration: ordinary results after a
 day, failures after seven so they remain available for diagnosis.

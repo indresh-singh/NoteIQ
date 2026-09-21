@@ -18,7 +18,6 @@ def event():
 def enable_openrouter(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     monkeypatch.setenv("OPENROUTER_MODEL", "test/model")
-    monkeypatch.setenv("AI_PROVIDER", "openrouter")
     settings.cache_clear()
 
 

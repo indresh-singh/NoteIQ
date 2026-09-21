@@ -1,0 +1,112 @@
+"""OpenAI Responses API provider for Enterprise-project API keys.
+
+The limiter is intentionally conservative: one request at a time, with a
+minimum 30-second gap by default. It is process-local, so deployments that
+need a tenant-wide ceiling should keep one worker replica until a distributed
+limiter is introduced.
+"""
+
+import asyncio
+import logging
+import time
+
+import httpx
+from pydantic import ValidationError
+
+from app.config import Settings
+from app.models import Insight
+from app.observability import response_diagnostics
+from app.openrouter import extract_json_object
+from app.prompts.meeting_summary import SYSTEM_PROMPT, user_prompt
+
+log = logging.getLogger(__name__)
+
+API = "https://api.openai.com/v1/responses"
+MAX_TRANSCRIPT_CHARS = 20_000
+MAX_OUTPUT_TOKENS = 1_200
+_request_lock = asyncio.Lock()
+_next_request_at = 0.0
+
+
+class OpenAI:
+    """Generate a meeting insight through the OpenAI Responses API."""
+
+    def __init__(self, config: Settings):
+        self.config = config
+
+    async def summarize(self, key: str, subject: str, transcript_text: str) -> Insight:
+        text = transcript_text[:MAX_TRANSCRIPT_CHARS]
+        payload = {
+            "model": self.config.openai_model,
+            "input": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt(subject, text)},
+            ],
+            "max_output_tokens": MAX_OUTPUT_TOKENS,
+        }
+        response = await self.request(**payload)
+        try:
+            content = response.get("output_text") or ""
+            data = extract_json_object(content)
+            return Insight.model_validate({**data, "id": f"openai:{key}"})
+        except (TypeError, ValueError, ValidationError) as error:
+            log.warning(
+                "OpenAI response parsing failed model=%s response_keys=%s error_type=%s",
+                self.config.openai_model,
+                sorted(response.keys()),
+                type(error).__name__,
+                exc_info=True,
+            )
+            raise ValueError("OpenAI did not return a usable summary.") from error
+
+    async def request(self, **payload: object) -> dict:
+        global _next_request_at
+        model = str(payload.get("model", "unknown"))
+        async with _request_lock:
+            delay = _next_request_at - time.monotonic()
+            if delay > 0:
+                log.info("OpenAI request delayed model=%s delay_s=%.1f", model, delay)
+                await asyncio.sleep(delay)
+            # Reserve the next slot before the network call, including when it
+            # fails, to avoid a retry storm after a quota response.
+            _next_request_at = time.monotonic() + self.config.openai_min_request_interval_seconds
+            started = time.monotonic()
+            try:
+                async with httpx.AsyncClient(timeout=60) as client:
+                    response = await client.post(
+                        API,
+                        headers={
+                            "Authorization": f"Bearer {self.config.openai_api_key.get_secret_value()}",
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                    )
+                log.info(
+                    "OpenAI request completed model=%s status=%s duration_ms=%d request_id=%s",
+                    model,
+                    response.status_code,
+                    (time.monotonic() - started) * 1000,
+                    response.headers.get("x-request-id", "-"),
+                )
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPStatusError as error:
+                log.warning(
+                    "OpenAI request rejected model=%s diagnostic=%s",
+                    model,
+                    response_diagnostics(error.response),
+                    exc_info=True,
+                )
+                if error.response.status_code in {401, 403}:
+                    raise ValueError("OpenAI rejected this API key.") from None
+                if error.response.status_code == 429:
+                    raise ValueError("OpenAI is rate-limited; the next request is delayed.") from None
+                raise ValueError("OpenAI could not complete this request.") from None
+            except httpx.HTTPError as error:
+                log.warning(
+                    "OpenAI transport failure model=%s error_type=%s",
+                    model,
+                    type(error).__name__,
+                    exc_info=True,
+                )
+                raise ValueError("Unable to reach OpenAI.") from None

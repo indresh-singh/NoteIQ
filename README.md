@@ -26,7 +26,7 @@ The configuration helper asks for four values and generates the webhook secret. 
 
 The server emits detailed UTC logs by default at `INFO`. Every browser request has an
 `X-Request-ID` (also returned in the response), and every background job has a job ID.
-External Graph, ClickUp and OpenRouter calls record the operation, status, latency,
+External Graph, ClickUp, OpenRouter and OpenAI calls record the operation, status, latency,
 response size, provider request IDs, retries, and sanitized provider error details.
 Unhandled and internally recovered failures include their full exception chains and
 tracebacks.

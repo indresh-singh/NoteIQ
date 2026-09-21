@@ -26,7 +26,14 @@ class Settings(BaseModel):
     clickup_token_key: SecretStr | None = None
     openrouter_api_key: SecretStr | None = None
     openrouter_model: str | None = None
-    ai_provider: Literal["copilot", "openrouter"] = "copilot"
+    # API keys issued to an Enterprise project use the normal OpenAI API
+    # endpoint; ChatGPT's interactive web endpoint is never called here.
+    openai_api_key: SecretStr | None = None
+    openai_model: str = "gpt-5-nano"
+    # A deliberately low application-side ceiling. This is per worker process;
+    # keep the worker replica count low until the Enterprise project's limits
+    # are known.
+    openai_min_request_interval_seconds: float = 30
     # "web" and "worker" split the two halves into separate containers so the web
     # tier can scale out; "all" keeps both in one process, as a single replica.
     role: Literal["all", "web", "worker"] = "all"
@@ -53,6 +60,23 @@ class Settings(BaseModel):
     def openrouter_enabled(self) -> bool:
         return self.openrouter_api_key is not None
 
+    @property
+    def openai_enabled(self) -> bool:
+        return self.openai_api_key is not None
+
+    @property
+    def external_ai_enabled(self) -> bool:
+        return self.openai_enabled or self.openrouter_enabled
+
+    @property
+    def summary_provider(self) -> str:
+        """Configured transcript-summary service; OpenAI takes precedence."""
+        if self.openai_enabled:
+            return "openai"
+        if self.openrouter_enabled:
+            return "openrouter"
+        return "copilot"
+
 
 @lru_cache
 def settings() -> Settings:
@@ -72,7 +96,11 @@ def settings() -> Settings:
         clickup_token_key=os.getenv("CLICKUP_TOKEN_KEY") or None,
         openrouter_api_key=os.getenv("OPENROUTER_API_KEY") or None,
         openrouter_model=os.getenv("OPENROUTER_MODEL") or None,
-        ai_provider=os.getenv("AI_PROVIDER", "copilot"),
+        openai_api_key=os.getenv("OPENAI_API_KEY") or None,
+        openai_model=os.getenv("OPENAI_MODEL", "gpt-5-nano"),
+        openai_min_request_interval_seconds=os.getenv(
+            "OPENAI_MIN_REQUEST_INTERVAL_SECONDS", "30"
+        ),
         role=os.getenv("NOTEIQ_ROLE", "all"),
         job_concurrency=os.getenv("NOTEIQ_JOB_CONCURRENCY", "4"),
         meeting_retention_days=os.getenv("NOTEIQ_MEETING_RETENTION_DAYS") or None,
@@ -107,6 +135,6 @@ def settings() -> Settings:
         raise ValueError("NOTEIQ_MEETING_RETENTION_DAYS must be at least 7")
     if bool(config.openrouter_api_key) != bool(config.openrouter_model):
         raise ValueError("Configure OPENROUTER_API_KEY and OPENROUTER_MODEL together")
-    if config.ai_provider == "openrouter" and not config.openrouter_enabled:
-        raise ValueError("AI_PROVIDER=openrouter requires OPENROUTER_API_KEY and OPENROUTER_MODEL")
+    if not 1 <= config.openai_min_request_interval_seconds <= 3600:
+        raise ValueError("OPENAI_MIN_REQUEST_INTERVAL_SECONDS must be between 1 and 3600")
     return config

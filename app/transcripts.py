@@ -15,6 +15,7 @@ from app.adaptive_cards import build_card
 from app.config import settings
 from app.graph_client import GraphClient, retryable
 from app.models import MeetingSync, TranscriptEvent, age_seconds
+from app.openai import OpenAI
 from app.openrouter import OpenRouter
 from app.store import Store, digest
 
@@ -89,6 +90,43 @@ async def summarize_with_openrouter(
     return True
 
 
+async def summarize_with_ai(
+    store: Store, user_id: str, event: TranscriptEvent, subject: str, text: str
+) -> bool:
+    """Generate an insight with the selected external provider."""
+    config = settings()
+    if config.summary_provider != "openai":
+        return await summarize_with_openrouter(store, user_id, event, subject, text)
+    try:
+        insight = await OpenAI(config).summarize(event.meeting_id, subject, text)
+    except ValueError as error:
+        log.warning(
+            "OpenAI summary user=%s meeting=%s failed reason=%s",
+            user_id,
+            event.meeting_id,
+            error,
+        )
+        return False
+    card = build_card(insight, subject, source=f"OpenAI ({config.openai_model})")
+    if card is None:
+        return False
+    store.save_meeting(
+        user_id,
+        subject,
+        {
+            "meeting_id": event.meeting_id,
+            "insight": {
+                **insight.model_dump(mode="json"),
+                "source_id": insight.id,
+                "provider": "openai",
+            },
+            "card": card,
+        },
+    )
+    queue_notification(store, user_id, f"insight:{event.meeting_id}", subject, INSIGHTS_READY)
+    return True
+
+
 async def process_transcript(event: TranscriptEvent, graph: GraphClient, store: Store) -> str:
     user_id = str(event.user_id)
     user = store.user(user_id)
@@ -154,12 +192,12 @@ async def process_transcript(event: TranscriptEvent, graph: GraphClient, store: 
             },
         )
         store.enqueue([MeetingSync(user_id=user_id, meeting_id=event.meeting_id).model_dump_json()])
-        if settings().openrouter_enabled:
+        if settings().external_ai_enabled:
             # Re-read the meeting: save_meeting has just added this transcript,
             # so this picks up every segment including the one we arrived with.
             saved = store.find_meeting(user_id, event.meeting_id)
             whole = meeting_transcript_text(store, user_id, saved) if saved else text
-            await summarize_with_openrouter(store, user_id, event, subject, whole or text)
+            await summarize_with_ai(store, user_id, event, subject, whole or text)
         return "TRANSCRIPT_SAVED"
     except httpx.HTTPStatusError as error:
         if retryable(error) or error.response.status_code == 404:
