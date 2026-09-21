@@ -9,6 +9,7 @@ import httpx
 
 from app.meetings import meeting_filter
 from app.models import InsightEvent, MeetingSync, TranscriptEvent, UserSync
+from app.store import digest
 
 log = logging.getLogger(__name__)
 
@@ -134,6 +135,7 @@ async def sync_meeting(event, graph, store):
     if saved is None:
         return "SKIPPED_UNKNOWN_MEETING"
     path = f"/users/{user_id}/onlineMeetings/{quote(event.meeting_id, safe='')}"
+    tag = digest(event.meeting_id)[:8]
     failed = False
     # Copilot insight sync runs regardless of AI_PROVIDER: Copilot and OpenRouter
     # insights are captured side by side, not as an either/or choice.
@@ -146,19 +148,38 @@ async def sync_meeting(event, graph, store):
             known = {item[kind]["id"] for item in saved.get(kind + "s", [])}
             known.update(item[kind].get("source_id") for item in saved.get(kind + "s", []))
             items = await graph.list(resource)
+            fresh = [item["id"] for item in items if item["id"] not in known]
             store.enqueue(
                 [
                     model(
-                        user_id=user_id, meeting_id=event.meeting_id, **{field: item["id"]}
+                        user_id=user_id, meeting_id=event.meeting_id, **{field: item_id}
                     ).model_dump_json()
-                    for item in items
-                    if item["id"] not in known
+                    for item_id in fresh
                 ]
             )
-            log.info("Meeting sync user=%s kind=%s available=%s", user_id, kind, len(items))
+            log.info(
+                "Meeting sync user=%s meeting=%s kind=%s available=%s new=%s",
+                user_id,
+                tag,
+                kind,
+                len(items),
+                len(fresh),
+            )
+            if fresh:
+                # The first poll that sees an artifact brackets Microsoft's
+                # publication time to within one polling interval. Pairing this
+                # with the preceding available=0 line is what separates their
+                # lag from ours.
+                log.info(
+                    "Artifact first visible user=%s meeting=%s kind=%s count=%s",
+                    user_id,
+                    tag,
+                    kind,
+                    len(fresh),
+                )
         except Exception:
             failed = True
-            log.warning("Meeting sync user=%s kind=%s failed", user_id, kind)
+            log.warning("Meeting sync user=%s meeting=%s kind=%s failed", user_id, tag, kind)
     if failed:
         raise RuntimeError("Retry meeting sync")
     return "SYNCED"

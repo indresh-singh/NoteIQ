@@ -7,8 +7,8 @@ from pydantic import ValidationError
 from app.activity import INSIGHTS_READY, queue_notification
 from app.adaptive_cards import build_card
 from app.graph_client import GraphClient, retryable
-from app.models import Insight, InsightEvent, MeetingSync
-from app.store import Store
+from app.models import Insight, InsightEvent, MeetingSync, age_seconds
+from app.store import Store, digest
 
 log = logging.getLogger(__name__)
 
@@ -17,6 +17,7 @@ async def process_insight(event: InsightEvent, graph: GraphClient, store: Store)
     started = time.monotonic()
     status = "PROCESSING"
     user_id = str(event.user_id)
+    publish_lag = None
     try:
         user = store.user(user_id)
         if not user or not user["enabled"]:
@@ -31,6 +32,9 @@ async def process_insight(event: InsightEvent, graph: GraphClient, store: Store)
             status = "SKIPPED_NOT_ORGANIZER"
         else:
             insight = Insight.model_validate(await graph.request("GET", event.insight_path))
+            # Seconds between the meeting ending and Graph serving its
+            # insight: Microsoft's publication lag plus at most one poll.
+            publish_lag = age_seconds(insight.endDateTime)
             subject = meeting.get("subject") or "Teams meeting"
             card = build_card(insight, subject)
             if card is None:
@@ -72,9 +76,11 @@ async def process_insight(event: InsightEvent, graph: GraphClient, store: Store)
         status = "NEEDS_REVIEW"
     finally:
         log.info(
-            "Insight user=%s status=%s latency_ms=%d",
+            "Insight user=%s meeting=%s status=%s publish_lag_s=%s latency_ms=%d",
             user_id,
+            digest(event.meeting_id)[:8],
             status,
+            "unknown" if publish_lag is None else round(publish_lag),
             (time.monotonic() - started) * 1000,
         )
     return status

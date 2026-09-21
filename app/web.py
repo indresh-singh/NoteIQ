@@ -22,7 +22,7 @@ from app.auth import identity_client
 from app.clickup import ClickUp
 from app.config import ROOT, Settings, settings
 from app.graph_client import GraphClient
-from app.models import TranscriptEvent, UserSync, parse_event
+from app.models import InsightEvent, TranscriptEvent, UserSync, parse_event
 from app.notifications import validate_notifications
 from app.openrouter import MAX_TRANSCRIPT_CHARS, OpenRouter
 from app.store import Store, digest
@@ -641,7 +641,18 @@ def create_app(
                 message for message in messages if str(parse_event(message).user_id) in users
             ]
             request.app.state.store.enqueue(accepted)
-            log.info("Graph webhook received=%s enrolled=%s", len(messages), len(accepted))
+            kinds = sorted(
+                {
+                    "insight" if isinstance(parse_event(message), InsightEvent) else "transcript"
+                    for message in accepted
+                }
+            )
+            log.info(
+                "Graph webhook received=%s enrolled=%s kinds=%s",
+                len(messages),
+                len(accepted),
+                ",".join(kinds) or "none",
+            )
         return PlainTextResponse("", status_code=202)
 
     @app.post("/api/graph/notifications")

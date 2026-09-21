@@ -1,10 +1,28 @@
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 from urllib.parse import quote, unquote
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+
+
+def age_seconds(value: "datetime | str | None") -> float | None:
+    """Seconds since an instant, for latency logging. None when unparseable.
+
+    Graph timestamps arrive as ISO-8601 with a trailing Z; treat a naive value
+    as UTC so a missing offset cannot silently skew a measurement.
+    """
+    if not value:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - value).total_seconds()
 
 
 class Note(BaseModel):

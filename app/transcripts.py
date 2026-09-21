@@ -14,9 +14,9 @@ from app.activity import INSIGHTS_READY, TRANSCRIPT_READY, queue_notification
 from app.adaptive_cards import build_card
 from app.config import settings
 from app.graph_client import GraphClient, retryable
-from app.models import MeetingSync, TranscriptEvent
+from app.models import MeetingSync, TranscriptEvent, age_seconds
 from app.openrouter import OpenRouter
-from app.store import Store
+from app.store import Store, digest
 
 log = logging.getLogger(__name__)
 
@@ -78,6 +78,13 @@ async def process_transcript(event: TranscriptEvent, graph: GraphClient, store: 
         if owner.lower() != user_id:
             return "SKIPPED_NOT_ORGANIZER"
         metadata = await graph.request("GET", event.transcript_path)
+        transcript_lag = age_seconds(metadata.get("createdDateTime"))
+        log.info(
+            "Transcript user=%s meeting=%s publish_lag_s=%s",
+            user_id,
+            digest(event.meeting_id)[:8],
+            "unknown" if transcript_lag is None else round(transcript_lag),
+        )
         try:
             text = await graph.request(
                 "GET",
