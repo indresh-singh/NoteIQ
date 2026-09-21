@@ -10,7 +10,7 @@ import logging
 
 import httpx
 
-from app.activity import INSIGHTS_READY, TRANSCRIPT_READY, queue_notification
+from app.activity import INSIGHTS_READY, queue_notification
 from app.adaptive_cards import build_card
 from app.config import settings
 from app.graph_client import GraphClient, retryable
@@ -85,9 +85,7 @@ async def summarize_with_openrouter(
             "card": card,
         },
     )
-    queue_notification(
-        store, user_id, f"insight:{event.meeting_id}:{insight.id}", subject, INSIGHTS_READY
-    )
+    queue_notification(store, user_id, f"insight:{event.meeting_id}", subject, INSIGHTS_READY)
     return True
 
 
@@ -156,13 +154,6 @@ async def process_transcript(event: TranscriptEvent, graph: GraphClient, store: 
             },
         )
         store.enqueue([MeetingSync(user_id=user_id, meeting_id=event.meeting_id).model_dump_json()])
-        queue_notification(
-            store,
-            user_id,
-            f"transcript:{event.meeting_id}:{event.transcript_id}",
-            subject,
-            TRANSCRIPT_READY,
-        )
         if settings().openrouter_enabled:
             # Re-read the meeting: save_meeting has just added this transcript,
             # so this picks up every segment including the one we arrived with.

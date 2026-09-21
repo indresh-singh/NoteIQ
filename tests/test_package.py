@@ -20,8 +20,7 @@ def test_package_uses_public_tab_and_contains_no_bot_or_secrets(config, tmp_path
             {"name": "TeamsActivity.Send.User", "type": "Application"}
         ]
         assert {item["type"] for item in manifest["activities"]["activityTypes"]} == {
-            "transcriptReady",
-            "insightsReady",
+            "insightsReady"
         }
         assert "${" not in content
         assert manifest["$schema"].startswith("https://developer.microsoft.com/")

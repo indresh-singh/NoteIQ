@@ -555,7 +555,7 @@ async function refresh(sync = false) {
     const notificationError = user.notifications === "DELIVERY_ERROR";
     $("#notification-status").textContent = notificationError
       ? "Teams notification delivery needs attention. Install or update NoteIQ in Teams and accept its notification permission, then retry."
-      : "NoteIQ will notify you in Teams Activity when transcripts and insights are ready.";
+      : "NoteIQ will notify you once in Teams Activity when a meeting's AI insights are ready.";
     $("#notification-retry").hidden = !notificationError;
     $("#retry").hidden = !["ACCESS_REQUIRED", "CONNECTION_ERROR"].includes(user.status);
     renderMeetings(meetings.filter((m) => m.content.source !== "upload"), clickup, user.ai_provider);

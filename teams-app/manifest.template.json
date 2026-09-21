@@ -53,11 +53,6 @@
   "activities": {
     "activityTypes": [
       {
-        "type": "transcriptReady",
-        "description": "Transcript available",
-        "templateText": "{actor} has your transcript ready"
-      },
-      {
         "type": "insightsReady",
         "description": "Copilot insights available",
         "templateText": "{actor} has your meeting summary and action items ready"

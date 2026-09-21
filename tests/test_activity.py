@@ -43,7 +43,7 @@ async def test_activity_uses_app_token_and_targets_organizer(store, config, monk
 
 async def test_retry_keeps_chain_id_and_saved_content(store):
     store.save_meeting(USER, "Meeting", {"meeting_id": "meeting"})
-    queue_notification(store, USER, "transcript:meeting:id", "Meeting", "Transcript ready")
+    queue_notification(store, USER, "insight:meeting", "Meeting", INSIGHTS_READY)
     graph = AsyncMock()
     graph.request.side_effect = [httpx.ConnectError("offline"), {}]
     assert await send_next_notification(store, graph)
@@ -55,28 +55,34 @@ async def test_retry_keeps_chain_id_and_saved_content(store):
     assert await send_next_notification(store, graph)
     bodies = [call.kwargs["json"] for call in graph.request.call_args_list]
     assert bodies[0]["chainId"] == bodies[1]["chainId"]
-    assert bodies[0]["activityType"] == "transcriptReady"
+    assert bodies[0]["activityType"] == "insightsReady"
 
 
-async def test_both_artifacts_queue_distinct_activity_notifications(store, samples):
+async def test_a_meeting_notifies_once_for_insights_and_never_for_a_transcript(store, samples):
     graph = AsyncMock()
     graph.request.side_effect = [samples["meeting"], {"id": "transcript"}, "WEBVTT\nHello"]
     event = TranscriptEvent(user_id=USER, meeting_id="sample-meeting", transcript_id="transcript")
     assert await process_transcript(event, graph, store) == "TRANSCRIPT_SAVED"
+    graph.request.side_effect = None
+    assert not await send_next_notification(store, graph)
     insight = InsightEvent.from_resource(samples["notification"]["value"][0]["resource"])
     for _ in range(2):
         graph.request.side_effect = [samples["meeting"], samples["insight"]]
         assert await process_insight(insight, graph, store) == "SAVED"
     graph.request.side_effect = None
     assert await send_next_notification(store, graph)
-    transcript_payload = graph.request.call_args.kwargs["json"]
-    assert await send_next_notification(store, graph)
-    insight_payload = graph.request.call_args.kwargs["json"]
-    assert transcript_payload["activityType"] == "transcriptReady"
-    assert insight_payload["activityType"] == "insightsReady"
-    assert transcript_payload["chainId"] != insight_payload["chainId"]
+    assert graph.request.call_args.kwargs["json"]["activityType"] == "insightsReady"
     assert not await send_next_notification(store, graph)
     assert len(store.meetings(USER)) == 1
+
+
+async def test_queued_transcript_notifications_from_an_older_build_are_dropped(store):
+    queue_notification(store, USER, "transcript:meeting:id", "Meeting", "Transcript ready")
+    graph = AsyncMock()
+    assert await send_next_notification(store, graph)
+    graph.request.assert_not_awaited()
+    with store.connect() as db:
+        assert db.execute("SELECT status FROM activity_outbox").fetchone()[0] == "cancelled"
 
 
 async def test_disconnect_stops_notifications(store):

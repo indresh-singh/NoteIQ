@@ -58,11 +58,7 @@ async def process_insight(event: InsightEvent, graph: GraphClient, store: Store)
                     [MeetingSync(user_id=user_id, meeting_id=event.meeting_id).model_dump_json()]
                 )
                 queue_notification(
-                    store,
-                    user_id,
-                    f"insight:{event.meeting_id}:{event.insight_id}",
-                    subject,
-                    INSIGHTS_READY,
+                    store, user_id, f"insight:{event.meeting_id}", subject, INSIGHTS_READY
                 )
                 if store.user(user_id)["status"] not in {"MISSED_EVENTS", "ACCESS_REQUIRED"}:
                     store.status(user_id, "LISTENING")
