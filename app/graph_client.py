@@ -47,6 +47,29 @@ async def retry(operation: Callable[[], Awaitable[T]]) -> T:
 
 
 class GraphClient:
+    """Talks to Graph over one reusable connection pool.
+
+    A client per request meant a fresh TLS handshake on every call, and the
+    polling sweep alone makes a few thousand an hour. Created on first use so it
+    binds to the running loop, and closed with the application.
+    """
+
+    def __init__(self) -> None:
+        self._client: httpx.AsyncClient | None = None
+
+    def client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                timeout=20,
+                limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+            )
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+        self._client = None
+
     async def request(
         self, method: str, path: str, *, text: bool = False, retries: bool = True, **kwargs: Any
     ) -> dict | str:
@@ -62,8 +85,7 @@ class GraphClient:
         async def send() -> dict | str:
             token = await graph_token()
             headers = {**extra_headers, "Authorization": f"Bearer {token}"}
-            async with httpx.AsyncClient(timeout=20) as client:
-                response = await client.request(method, url, headers=headers, **kwargs)
+            response = await self.client().request(method, url, headers=headers, **kwargs)
             log.info("Graph method=%s status=%s", method, response.status_code)
             if response.is_error:
                 try:
@@ -72,7 +94,8 @@ class GraphClient:
                     error = {}
                 log.warning(
                     "Graph failure code=%s inner_code=%s request_id=%s",
-                    error.get("code"), (error.get("innerError") or {}).get("code"),
+                    error.get("code"),
+                    (error.get("innerError") or {}).get("code"),
                     response.headers.get("request-id"),
                 )
             response.raise_for_status()

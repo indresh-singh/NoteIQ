@@ -151,7 +151,9 @@ async def test_openrouter_provider_generates_insight_instead_of_copilot(
 
     insights = store.meetings(USER)[0]["content"]["insights"]
     assert len(insights) == 1
-    assert insights[0]["insight"]["id"] == "openrouter:transcript"
+    # Keyed by meeting, not transcript: the summary covers the whole meeting, so
+    # a second segment replaces it instead of adding an overlapping summary.
+    assert insights[0]["insight"]["id"] == "openrouter:sample-meeting"
     assert insights[0]["insight"]["provider"] == "openrouter"
     assert "OpenRouter (test/model)" in json.dumps(insights[0]["card"])
 

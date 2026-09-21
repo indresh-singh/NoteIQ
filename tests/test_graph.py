@@ -28,6 +28,44 @@ async def test_foreign_pagination_url_rejected():
         await GraphClient().request("GET", "https://evil.invalid/steal-token")
 
 
+class TestConnectionReuse:
+    """A client per request meant a TLS handshake on every Graph call, and the
+    polling sweep alone makes thousands an hour."""
+
+    async def test_every_call_shares_one_client(self, monkeypatch):
+        monkeypatch.setattr("app.graph_client.graph_token", AsyncMock(return_value="t"))
+        original_client = httpx.AsyncClient
+        built = []
+
+        def build(**kw):
+            client = original_client(
+                transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})), **kw
+            )
+            built.append(client)
+            return client
+
+        monkeypatch.setattr("app.graph_client.httpx.AsyncClient", build)
+        graph = GraphClient()
+        await graph.request("GET", "/subscriptions")
+        await graph.request("GET", "/subscriptions")
+        assert len(built) == 1
+        await graph.aclose()
+
+    async def test_a_closed_client_is_replaced_rather_than_reused(self):
+        graph = GraphClient()
+        first = graph.client()
+        await first.aclose()
+        assert graph.client() is not first
+        await graph.aclose()
+
+    async def test_closing_twice_is_safe(self):
+        """Shutdown runs it; a failed startup can run it again."""
+        graph = GraphClient()
+        graph.client()
+        await graph.aclose()
+        await graph.aclose()
+
+
 async def test_pagination():
     graph = GraphClient()
     graph.request = AsyncMock(

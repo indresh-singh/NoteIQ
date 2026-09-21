@@ -101,6 +101,9 @@ Set these normal Container App environment variables:
 | `CLICKUP_CLIENT_ID` | Optional ClickUp OAuth client ID |
 | `AI_PROVIDER` | `copilot` (default) or `openrouter` — selects which service generates meeting summaries and action items |
 | `OPENROUTER_MODEL` | Required when `AI_PROVIDER=openrouter`: the OpenRouter model id, e.g. `openai/gpt-4o-mini` |
+| `NOTEIQ_ROLE` | `all` (default) runs the web tier and the background worker in one process. `web` and `worker` split them into separate Container Apps; see [scaling](scaling.md) |
+| `NOTEIQ_JOB_CONCURRENCY` | How many queued jobs the worker runs at once. Default `4`, maximum `32` |
+| `NOTEIQ_MEETING_RETENTION_DAYS` | Optional. Unset means saved meetings are kept until the user disconnects. Setting it deletes meetings and their transcripts once they are older than this many days (minimum `7`) |
 
 Set protected values as Container App secrets and reference them from variables:
 

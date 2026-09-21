@@ -27,7 +27,7 @@ from app.notifications import validate_notifications
 from app.openrouter import MAX_TRANSCRIPT_CHARS, OpenRouter
 from app.store import Store, digest
 from app.subscriptions import resource_owner
-from app.transcripts import summarize_with_openrouter
+from app.transcripts import meeting_transcript_text, summarize_with_openrouter
 from app.worker import run_worker
 
 log = logging.getLogger(__name__)
@@ -69,6 +69,17 @@ class MeetingRecovery(BaseModel):
 def bearer(request: Request) -> str:
     header = request.headers.get("authorization", "")
     return header[7:] if header.startswith("Bearer ") else ""
+
+
+def request_repair(request: Request):
+    """Ask the worker to re-check subscriptions, wherever it is running.
+
+    The event reaches a worker inside this process immediately; the stored flag
+    is what reaches it when the roles are split across containers, or when
+    another web replica served the request.
+    """
+    request.app.state.repair.set()
+    request.app.state.store.request_repair()
 
 
 def current_user(request: Request) -> dict:
@@ -130,7 +141,7 @@ def create_app(
         app.state.repair = asyncio.Event()
         task = (
             asyncio.create_task(run_worker(app.state.store, app.state.graph, app.state.repair))
-            if background
+            if background and app.state.config.runs_worker
             else None
         )
         yield
@@ -138,6 +149,7 @@ def create_app(
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+        await app.state.graph.aclose()
         app.state.store.close()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -256,7 +268,7 @@ def create_app(
         if not item:
             raise HTTPException(401, "This sign-in has already been used.")
         store.enroll(item["user_id"], item["name"])
-        request.app.state.repair.set()
+        request_repair(request)
         return {"token": store.session(item["user_id"])}
 
     @app.get("/api/me")
@@ -544,8 +556,10 @@ def create_app(
         if not transcripts:
             raise HTTPException(409, "No transcript available to summarize yet.")
         latest = transcripts[-1]["transcript"]
-        text = store.transcript(user["id"], latest["local_id"])
-        if text is None:
+        # Summarise every segment, not just the last: a meeting whose
+        # transcription was stopped and restarted is only whole in combination.
+        text = meeting_transcript_text(store, user["id"], meeting["content"])
+        if not text:
             raise HTTPException(404, "Transcript content not found.")
         event = TranscriptEvent(
             user_id=user["id"],
@@ -594,7 +608,7 @@ def create_app(
     @app.post("/api/reconnect")
     async def reconnect(request: Request, user: dict = Depends(current_user)):
         request.app.state.store.status(user["id"], "CONNECTING")
-        request.app.state.repair.set()
+        request_repair(request)
         return {"status": "CONNECTING"}
 
     @app.post("/api/logout")
@@ -605,7 +619,7 @@ def create_app(
     @app.post("/api/disconnect")
     async def disconnect(request: Request, user: dict = Depends(current_user)):
         request.app.state.store.disconnect(user["id"])
-        request.app.state.repair.set()
+        request_repair(request)
         return {"status": "disconnected"}
 
     async def accept(request: Request, lifecycle: bool = False):
@@ -620,7 +634,7 @@ def create_app(
             raise HTTPException(400, "Invalid notification") from None
         if lifecycle:
             if messages:
-                request.app.state.repair.set()
+                request_repair(request)
             missed = [resource for event, resource in messages if event == "missed"]
             if missed:
                 store = request.app.state.store

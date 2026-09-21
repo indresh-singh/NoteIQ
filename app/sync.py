@@ -9,45 +9,60 @@ import httpx
 
 from app.meetings import meeting_filter
 from app.models import InsightEvent, MeetingSync, TranscriptEvent, UserSync
-from app.store import artifact_aliases, digest
+from app.store import (
+    PUBLICATION_WINDOW_HOURS,
+    bodies,
+    digest,
+    newest_transcript_at,
+    settled,
+)
 
 log = logging.getLogger(__name__)
 
+# How far back any sweep or manual refresh looks. Graph's own transcript
+# discovery is bounded to the same window.
+RECENT_SECONDS = 7 * 86400
 
-def settled(content: dict) -> bool:
-    """True once every transcript has its insight, leaving polling nothing to find.
+# bodies and settled live in app.store, which computes them once per write into
+# the columns the sweep reads; re-exported here because this is where the rules
+# they express are documented.
+__all__ = [
+    "PUBLICATION_WINDOW_HOURS",
+    "bodies",
+    "discover_meetings",
+    "past_publication_window",
+    "queue_sync",
+    "recover_from_link",
+    "settled",
+    "sync_meeting",
+    "sync_now",
+]
 
-    Graph creates one insight per transcript, so a meeting whose transcription
-    was stopped and restarted is not finished at its first insight: counting
-    both sides keeps polling alive until the later one lands. Revisions are a
-    separate matter -- Copilot rewrites an insight under its existing id, which
-    a poll reports as already known, so only the webhook ever delivers those.
+
+def past_publication_window(content: dict, hours: float = PUBLICATION_WINDOW_HOURS) -> bool:
+    """True once even the newest transcript is older than Copilot's stated window.
+
+    Conservative by construction: a meeting with no transcript yet, or with
+    timestamps we cannot read, keeps polling rather than being abandoned. The
+    sweep applies this same rule in SQL against the stored
+    newest_transcript_at column, which is why both read it from one function.
     """
-    transcripts = content.get("transcripts") or (
-        [content["transcript"]] if content.get("transcript") else []
-    )
-    insights = content.get("insights") or (
-        [{"insight": content["insight"]}] if content.get("insight") else []
-    )
-    # Only Copilot insights count. OpenRouter summarises locally the moment a
-    # transcript lands, so counting it would mark every meeting finished before
-    # Copilot -- the thing polling is actually waiting for -- ever publishes.
-    copilot = [
-        item
-        for item in insights
-        if ((item.get("insight") or {}).get("provider") or "copilot") == "copilot"
-    ]
-    return bool(transcripts) and len(copilot) >= len(transcripts)
+    newest = newest_transcript_at(content)
+    return newest is not None and time.time() - newest > hours * 3600
 
 
-def queue_sync(store, user_id, *, discover=False):
-    meetings = store.meetings(user_id)
+def queue_sync(store, user_id, *, discover=False, within_window=True):
+    """Queue a poll for each meeting still worth polling.
+
+    within_window=False drops the publication-window bound for the manual
+    recovery path, whose whole purpose is reaching meetings old enough that the
+    background sweep has given up on them.
+    """
     payloads = [
-        MeetingSync(user_id=user_id, meeting_id=m["content"]["meeting_id"]).model_dump_json()
-        for m in meetings
-        if m["created"] >= time.time() - 7 * 86400
-        and m["content"].get("source") != "upload"
-        and not settled(m["content"])
+        MeetingSync(user_id=user_id, meeting_id=meeting_id).model_dump_json()
+        for meeting_id in store.sync_candidates(
+            user_id, since=time.time() - RECENT_SECONDS, within_window=within_window
+        )
     ]
     if discover:
         payloads.append(UserSync(user_id=user_id).model_dump_json())
@@ -80,12 +95,7 @@ async def discover_meetings(event, graph, store):
     # Match on every id a saved transcript is known by. getAllTranscripts names
     # transcripts differently from a meeting's own /transcripts list, so keying
     # on one id alone re-fetches -- and re-summarises -- what we already hold.
-    known = {
-        (m["content"]["meeting_id"], alias)
-        for m in store.meetings(user_id)
-        for item in m["content"].get("transcripts", [])
-        for alias in artifact_aliases(item["transcript"])
-    }
+    known = store.transcript_aliases(user_id)
     payloads = []
     for item in items:
         owner = ((item.get("meetingOrganizer") or {}).get("user") or {}).get("id")
@@ -123,11 +133,17 @@ async def sync_now(store, graph, user_id: str) -> int:
         await discover_meetings(UserSync(user_id=user_id), graph, store)
     except Exception:
         log.warning("Immediate sync user=%s discovery failed", user_id)
-    cutoff = time.time() - 7 * 86400
-    for meeting in store.meetings(user_id):
-        if meeting["created"] < cutoff or meeting["content"].get("source") == "upload":
-            continue
-        meeting_id = meeting["content"]["meeting_id"]
+    # Deliberately exhaustive, unlike the background sweep: a person clicking
+    # Refresh is asking for every recent meeting to be re-checked, including
+    # settled ones and ones past the publication window. Only the reading of it
+    # is cheaper now -- the candidate list comes from indexed columns instead of
+    # every saved card.
+    for meeting_id in store.sync_candidates(
+        user_id,
+        since=time.time() - RECENT_SECONDS,
+        within_window=False,
+        only_unsettled=False,
+    ):
         try:
             await sync_meeting(MeetingSync(user_id=user_id, meeting_id=meeting_id), graph, store)
         except Exception:
@@ -147,7 +163,7 @@ async def recover_from_link(store, graph, user_id, meeting_url):
                 meeting.get("subject") or "Teams meeting",
                 {"meeting_id": meeting["id"]},
             )
-    queued = queue_sync(store, user_id)
+    queued = queue_sync(store, user_id, within_window=False)
     return {"found": len(meetings), "queued": queued}
 
 
@@ -156,14 +172,7 @@ async def sync_meeting(event, graph, store):
     user = store.user(user_id)
     if not user or not user["enabled"]:
         return "SKIPPED_NOT_ENROLLED"
-    saved = next(
-        (
-            m["content"]
-            for m in store.meetings(user_id)
-            if m["content"]["meeting_id"] == event.meeting_id
-        ),
-        None,
-    )
+    saved = store.find_meeting(user_id, event.meeting_id)
     if saved is None:
         return "SKIPPED_UNKNOWN_MEETING"
     path = f"/users/{user_id}/onlineMeetings/{quote(event.meeting_id, safe='')}"

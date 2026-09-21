@@ -50,7 +50,8 @@ def test_regenerate_replaces_openrouter_insight(monkeypatch, client, store, sign
     assert response.status_code == 200
     insights = response.json()["content"]["insights"]
     assert len(insights) == 1
-    assert insights[0]["insight"]["id"] == "openrouter:t"
+    # Keyed by meeting, not transcript -- see test_transcripts.py.
+    assert insights[0]["insight"]["id"] == "openrouter:m"
     assert insights[0]["insight"]["provider"] == "openrouter"
 
 

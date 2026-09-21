@@ -60,6 +60,9 @@ def migrate(source: Path, database_url: str):
                 f"SELECT setval(pg_get_serial_sequence('{table}', 'id'), "
                 f"COALESCE(MAX(id), 1), MAX(id) IS NOT NULL) FROM {table}"
             )
+    # Rows arrive carrying only the columns SQLite had; the sweep reads derived
+    # ones. Without this they stay NULL until the application next starts.
+    target.backfill_meeting_facts()
     target.close()
     print(f"Copied {copied} rows from {source} to PostgreSQL.")
 

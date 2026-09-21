@@ -2,9 +2,90 @@
 
 import json
 
-from app.store import artifact_aliases, dedupe_content
-from scripts.dedupe_meetings import apply, plan, snapshot
+from app.store import artifact_aliases, dedupe_content, dedupe_items
+from scripts.dedupe_meetings import apply, scan, snapshot
 from tests.conftest import USER
+
+NOTE = {"title": "Budget", "text": "Agreed the date"}
+OTHER = {"title": "Timeline", "text": "Ship in March"}
+
+
+class TestRepetitionInsideOneSummary:
+    """A model listing the same point several times in a single reply."""
+
+    def test_exact_repeats_collapse_and_order_is_kept(self):
+        assert dedupe_items([NOTE, OTHER, NOTE]) == [NOTE, OTHER]
+
+    def test_distinct_points_all_survive(self):
+        assert dedupe_items([NOTE, OTHER]) == [NOTE, OTHER]
+
+    def test_key_order_does_not_make_two_copies_look_different(self):
+        reordered = {"text": NOTE["text"], "title": NOTE["title"]}
+        assert dedupe_items([NOTE, reordered]) == [NOTE]
+
+    def test_points_differing_in_any_field_are_both_kept(self):
+        nearly = {**NOTE, "text": NOTE["text"] + "."}
+        assert dedupe_items([NOTE, nearly]) == [NOTE, nearly]
+
+    def test_nested_subpoints_are_part_of_the_comparison(self):
+        with_sub = {**NOTE, "subpoints": [{"title": "a", "text": "b"}]}
+        assert dedupe_items([NOTE, with_sub]) == [NOTE, with_sub]
+        assert dedupe_items([with_sub, with_sub]) == [with_sub]
+
+    def test_an_empty_list_is_unchanged(self):
+        assert dedupe_items([]) == []
+
+    def test_repeated_notes_are_cleaned_and_reported(self):
+        content = {"insights": [insight("i", notes=[NOTE, NOTE, OTHER])]}
+        cleaned, report = dedupe_content(content)
+        assert cleaned["insights"][0]["insight"]["meetingNotes"] == [NOTE, OTHER]
+        assert report == {"meetingNotes": {"before": 3, "after": 2}}
+
+    def test_action_items_are_cleaned_too(self):
+        task = {"title": "Send proposal", "ownerDisplayName": "Ada"}
+        content = {"insights": [{"insight": {"id": "i", "actionItems": [task, task]}}]}
+        cleaned, report = dedupe_content(content)
+        assert cleaned["insights"][0]["insight"]["actionItems"] == [task]
+        assert report == {"actionItems": {"before": 2, "after": 1}}
+
+    def test_counts_accumulate_across_both_providers(self):
+        content = {
+            "insights": [
+                insight("c1", "copilot", [NOTE, NOTE]),
+                insight("openrouter:m", "openrouter", [OTHER, OTHER, OTHER]),
+            ]
+        }
+        cleaned, report = dedupe_content(content)
+        # Two copies of NOTE collapse to one, three of OTHER to one: 5 -> 2.
+        assert report == {"meetingNotes": {"before": 5, "after": 2}}
+        assert [len(i["insight"]["meetingNotes"]) for i in cleaned["insights"]] == [1, 1]
+
+    def test_a_clean_summary_reports_nothing_and_is_untouched(self):
+        content = {"insights": [insight("i", notes=[NOTE, OTHER])]}
+        cleaned, report = dedupe_content(content)
+        assert report == {}
+        assert cleaned == content
+
+    def test_the_caller_s_own_dict_is_never_mutated(self):
+        """dedupe_content is pure; save_meeting still holds these dicts."""
+        original = insight("i", notes=[NOTE, NOTE])
+        content = {"insights": [original]}
+        dedupe_content(content)
+        assert original["insight"]["meetingNotes"] == [NOTE, NOTE]
+
+    def test_transcripts_are_left_alone(self):
+        content = {"transcripts": [transcript("a", "a")]}
+        cleaned, report = dedupe_content(content)
+        assert report == {} and cleaned == content
+
+    def test_save_meeting_strips_repeats_on_the_way_in(self, store):
+        store.save_meeting(
+            USER,
+            "Standup",
+            {"meeting_id": "m", "insight": {"id": "i", "meetingNotes": [NOTE, NOTE]}, "card": {}},
+        )
+        saved = store.meetings(USER)[0]["content"]["insights"][0]["insight"]
+        assert saved["meetingNotes"] == [NOTE]
 
 
 def transcript(id_, source_id=None, **extra):
@@ -186,7 +267,7 @@ class TestCleanupScript:
 
     def test_plan_reports_without_writing(self, store):
         self.duplicated(store)
-        work = plan(store)
+        work, scanned = scan(store)
         assert len(work) == 1
         assert work[0]["report"] == {
             "transcripts": {"before": 2, "after": 1},
@@ -197,17 +278,17 @@ class TestCleanupScript:
 
     def test_apply_writes_and_a_second_pass_finds_nothing(self, store):
         self.duplicated(store)
-        written, skipped = apply(store, plan(store))
+        written, skipped = apply(store, scan(store)[0])
         assert (written, skipped) == (1, [])
         saved = store.meetings(USER)[0]["content"]
         assert len(saved["transcripts"]) == 1
         assert len(saved["insights"]) == 1
-        assert plan(store) == []
+        assert scan(store)[0] == []
 
     def test_a_row_changed_underneath_is_skipped_not_clobbered(self, store):
         """The worker may write between the read and the update."""
         self.duplicated(store)
-        work = plan(store)
+        work, scanned = scan(store)
         store.save_meeting(
             USER, "Standup", {"meeting_id": "m", "insight": {"id": "late"}, "card": {}}
         )
@@ -219,12 +300,12 @@ class TestCleanupScript:
 
     def test_clean_database_reports_no_work(self, store):
         store.save_meeting(USER, "Standup", {"meeting_id": "m", "transcript": {"id": "A"}})
-        assert plan(store) == []
+        assert scan(store)[0] == []
 
     def test_the_snapshot_holds_the_rows_as_they_were_before_the_write(self, store):
         """The undo path: a copy beside the original, not a server restore."""
         self.duplicated(store)
-        work = plan(store)
+        work, scanned = scan(store)
         table = snapshot(store)
         apply(store, work)
         with store.connect() as db:

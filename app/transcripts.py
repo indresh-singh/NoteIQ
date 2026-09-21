@@ -21,6 +21,29 @@ from app.store import Store, digest
 log = logging.getLogger(__name__)
 
 
+def meeting_transcript_text(store: Store, user_id: str, content: dict) -> str:
+    """Every segment of a meeting's transcript, oldest first, as one document.
+
+    Stopping and restarting transcription splits a meeting into several
+    transcripts, and Copilot summarises each in isolation. Joining them first
+    lets OpenRouter summarise the meeting as a whole instead of producing one
+    partial summary per segment.
+    """
+    entries = content.get("transcripts") or (
+        [{"transcript": content["transcript"]}] if content.get("transcript") else []
+    )
+    ordered = sorted(
+        entries, key=lambda e: (e.get("transcript") or {}).get("createdDateTime") or ""
+    )
+    parts = []
+    for entry in ordered:
+        local_id = (entry.get("transcript") or {}).get("local_id")
+        text = store.transcript(user_id, local_id) if local_id else None
+        if text:
+            parts.append(text)
+    return "\n\n".join(parts)
+
+
 async def summarize_with_openrouter(
     store: Store, user_id: str, event: TranscriptEvent, subject: str, text: str
 ) -> bool:
@@ -29,9 +52,13 @@ async def summarize_with_openrouter(
     Used both as a best-effort step after a transcript is saved (caller
     ignores the result) and by the manual "Regenerate" endpoint in app/web.py,
     which surfaces a failure to the user instead of just logging it.
+
+    The insight is keyed by meeting, not by transcript: it covers the whole
+    meeting, so a later segment replaces it rather than adding a second,
+    overlapping summary.
     """
     try:
-        insight = await OpenRouter(settings()).summarize(event.transcript_id, subject, text)
+        insight = await OpenRouter(settings()).summarize(event.meeting_id, subject, text)
     except ValueError as error:
         # These messages are hand-written in app/openrouter.py and never include
         # transcript content or secrets, so it's safe to log the reason directly.
@@ -137,7 +164,11 @@ async def process_transcript(event: TranscriptEvent, graph: GraphClient, store: 
             TRANSCRIPT_READY,
         )
         if settings().openrouter_enabled:
-            await summarize_with_openrouter(store, user_id, event, subject, text)
+            # Re-read the meeting: save_meeting has just added this transcript,
+            # so this picks up every segment including the one we arrived with.
+            saved = store.find_meeting(user_id, event.meeting_id)
+            whole = meeting_transcript_text(store, user_id, saved) if saved else text
+            await summarize_with_openrouter(store, user_id, event, subject, whole or text)
         return "TRANSCRIPT_SAVED"
     except httpx.HTTPStatusError as error:
         if retryable(error) or error.response.status_code == 404:

@@ -11,13 +11,20 @@ import tempfile
 import threading
 import time
 from contextlib import contextmanager, suppress
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 log = logging.getLogger(__name__)
+
+# Microsoft documents that insights "might take up to four hours to be available
+# after the call ends". Past that, with a margin, a poll is no longer waiting for
+# anything on a published schedule, and the webhook remains the way a straggler
+# arrives. Without a bound, one transcript Copilot never summarises keeps its
+# meeting in the sweep for the full seven-day retention.
+PUBLICATION_WINDOW_HOURS = 6
 
 
 def _meeting_occurred_at(content: dict) -> float | None:
@@ -49,6 +56,108 @@ def _meeting_occurred_at(content: dict) -> float | None:
         return max(datetime.fromisoformat(d.replace("Z", "+00:00")).timestamp() for d in dates)
     except (ValueError, AttributeError):
         return None
+
+
+def bodies(content: dict, kind: str) -> list[dict]:
+    """The stored records for one artifact kind, whichever shape they are in."""
+    entries = content.get(kind + "s")
+    if entries:
+        return [entry.get(kind) or {} for entry in entries]
+    return [content[kind]] if content.get(kind) else []
+
+
+def settled(content: dict) -> bool:
+    """True once every transcript has its insight, leaving polling nothing to find.
+
+    Graph creates one insight per transcript event -- "each transcript event of
+    the meeting creates an associated AI insight object" -- so a meeting whose
+    transcription was stopped and restarted is not finished at its first
+    insight. Where both sides carry contentCorrelationId, which Graph defines as
+    correlating an insight to the transcript it came from, pair on it: that says
+    *which* transcript is still unsummarised rather than merely how many are.
+    Rows written before we recorded it fall back to counting.
+
+    Revisions are a separate matter -- Copilot rewrites an insight under its
+    existing id, which a poll reports as already known, so only the webhook ever
+    delivers those.
+    """
+    transcripts = bodies(content, "transcript")
+    if not transcripts:
+        return False
+    # Only Copilot insights count. OpenRouter summarises locally the moment a
+    # transcript lands, so counting it would mark every meeting finished before
+    # Copilot -- the thing polling is actually waiting for -- ever publishes.
+    copilot = [
+        body
+        for body in bodies(content, "insight")
+        if (body.get("provider") or "copilot") == "copilot"
+    ]
+    wanted = [body.get("contentCorrelationId") for body in transcripts]
+    if all(wanted):
+        # An insight missing its correlation id simply fails to match, which
+        # keeps polling alive rather than declaring a transcript covered.
+        have = {body.get("contentCorrelationId") for body in copilot}
+        return set(wanted) <= have
+    return len(copilot) >= len(transcripts)
+
+
+def newest_transcript_at(content: dict) -> float | None:
+    """When the most recent transcript segment was created, as an epoch time.
+
+    None -- meaning "keep polling" to every caller -- whenever the answer cannot
+    be trusted: no transcript yet, or a timestamp we cannot read. The publication
+    window is an optimisation, and abandoning a meeting early is the one failure
+    it must not have.
+    """
+    stamps = []
+    for body in bodies(content, "transcript"):
+        value = body.get("createdDateTime")
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        # A naive timestamp is UTC, as everywhere else Graph values are read;
+        # .timestamp() would otherwise read it as local time.
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        stamps.append(parsed.timestamp())
+    return max(stamps) if stamps else None
+
+
+def meeting_facts(content: dict) -> dict:
+    """The columns derived from a meeting's content.
+
+    The polling sweep asks "which meetings are still worth a Graph call?" once a
+    minute per user. Answering that from the JSON means reading every saved card
+    and summary to look at four fields, so the answer is computed once per write
+    and stored beside the row instead.
+    """
+    return {
+        "meeting_id": content.get("meeting_id"),
+        "source": content.get("source"),
+        "settled": 1 if settled(content) else 0,
+        "newest_transcript_at": newest_transcript_at(content),
+        "occurred_at": _meeting_occurred_at(content),
+    }
+
+
+# Valid on both backends, so the two schemas cannot drift apart. meetings_recent
+# indexes the expression the listing actually orders by: an index on `created`
+# alone cannot serve `COALESCE(occurred_at, created)`, so every listing sorted
+# the user's whole history to return its first hundred rows.
+INDEXES = (
+    "CREATE INDEX IF NOT EXISTS jobs_ready ON jobs(status, due, id)",
+    """CREATE UNIQUE INDEX IF NOT EXISTS jobs_pending_payload
+    ON jobs(payload) WHERE status='pending'""",
+    "CREATE INDEX IF NOT EXISTS activity_ready ON activity_outbox(status, due, id)",
+    """CREATE INDEX IF NOT EXISTS meetings_recent
+    ON meetings(user_id, COALESCE(occurred_at, created) DESC, id DESC)""",
+    "CREATE INDEX IF NOT EXISTS meetings_lookup ON meetings(user_id, meeting_id)",
+    """CREATE INDEX IF NOT EXISTS meetings_sync ON meetings(user_id, created)
+    WHERE settled=0""",
+)
 
 
 class Row(dict):
@@ -134,8 +243,26 @@ def artifact_aliases(body: dict) -> set[str]:
     return aliases
 
 
+def dedupe_items(items: list) -> list:
+    """Drop repeated notes or action items from within one summary.
+
+    A model can list the same point several times in a single reply -- more
+    likely on the free tiers OpenRouter falls back to -- and nothing upstream
+    removes it, so the repetition reaches the card verbatim. Matching is exact:
+    anything looser risks deleting two genuinely different points that happen
+    to read alike.
+    """
+    seen, kept = set(), []
+    for item in items:
+        fingerprint = json.dumps(item, sort_keys=True, default=str)
+        if fingerprint not in seen:
+            seen.add(fingerprint)
+            kept.append(item)
+    return kept
+
+
 def dedupe_content(content: dict) -> tuple[dict, dict]:
-    """Collapse aliased transcripts and insights. Returns (cleaned, report).
+    """Collapse aliased transcripts and insights, and repetition within each.
 
     Pure: no database access, so the same logic guards every write in
     save_meeting and backfills rows written before that guard existed.
@@ -158,6 +285,8 @@ def dedupe_content(content: dict) -> tuple[dict, dict]:
             index.update(dict.fromkeys(aliases, at))
         if len(kept) != len(entries):
             report[field] = {"before": len(entries), "after": len(kept)}
+        if kind == "insight":
+            kept = _dedupe_within(kept, report)
         if entries:
             cleaned[field] = kept
             # The singular mirror must name a survivor or _meeting_occurred_at
@@ -165,6 +294,30 @@ def dedupe_content(content: dict) -> tuple[dict, dict]:
             if kind in cleaned:
                 cleaned[kind] = kept[-1][kind]
     return cleaned, report
+
+
+def _dedupe_within(entries: list[dict], report: dict) -> list[dict]:
+    """Clean each surviving insight's own note and action lists.
+
+    Copies rather than edits in place: dedupe_content is pure, and its callers
+    still hold the dicts these entries came from.
+    """
+    result = []
+    for entry in entries:
+        body = entry.get("insight") or {}
+        replacements = {}
+        for name in ("meetingNotes", "actionItems"):
+            items = body.get(name)
+            if not items:
+                continue
+            kept = dedupe_items(items)
+            if len(kept) != len(items):
+                counts = report.setdefault(name, {"before": 0, "after": 0})
+                counts["before"] += len(items)
+                counts["after"] += len(kept)
+                replacements[name] = kept
+        result.append({**entry, "insight": {**body, **replacements}} if replacements else entry)
+    return result
 
 
 def job_priority(payload: str) -> int:
@@ -255,12 +408,23 @@ class Store:
                 DROP TABLE IF EXISTS outbox;
             """)
             # SQLite has no ADD COLUMN IF NOT EXISTS; older databases lack these columns.
-            with suppress(sqlite3.OperationalError):
-                db.execute("ALTER TABLE clickup_connections ADD COLUMN list_name TEXT")
-            with suppress(sqlite3.OperationalError):
-                db.execute("ALTER TABLE meetings ADD COLUMN occurred_at REAL")
-            with suppress(sqlite3.OperationalError):
-                db.execute("ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 1")
+            for statement in (
+                "ALTER TABLE clickup_connections ADD COLUMN list_name TEXT",
+                "ALTER TABLE meetings ADD COLUMN occurred_at REAL",
+                "ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 1",
+                # Derived from content; see meeting_facts. Defaulting settled to 0
+                # keeps a row nothing has backfilled yet in the sweep rather than
+                # silently dropping it.
+                "ALTER TABLE meetings ADD COLUMN meeting_id TEXT",
+                "ALTER TABLE meetings ADD COLUMN source TEXT",
+                "ALTER TABLE meetings ADD COLUMN settled INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE meetings ADD COLUMN newest_transcript_at REAL",
+            ):
+                with suppress(sqlite3.OperationalError):
+                    db.execute(statement)
+            for statement in INDEXES:
+                db.execute(statement)
+        self.backfill_meeting_facts()
         # Some managed volume drivers set permissions at mount time and do not implement chmod.
         with suppress(OSError):
             path.chmod(0o600)
@@ -283,6 +447,13 @@ class Store:
                 id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL, subject TEXT NOT NULL,
                 content TEXT NOT NULL, created DOUBLE PRECISION NOT NULL)""",
             "ALTER TABLE meetings ADD COLUMN IF NOT EXISTS occurred_at DOUBLE PRECISION",
+            # Derived from content; see meeting_facts. Defaulting settled to 0
+            # keeps a row nothing has backfilled yet in the sweep rather than
+            # silently dropping it.
+            "ALTER TABLE meetings ADD COLUMN IF NOT EXISTS meeting_id TEXT",
+            "ALTER TABLE meetings ADD COLUMN IF NOT EXISTS source TEXT",
+            "ALTER TABLE meetings ADD COLUMN IF NOT EXISTS settled INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE meetings ADD COLUMN IF NOT EXISTS newest_transcript_at DOUBLE PRECISION",
             """CREATE TABLE IF NOT EXISTS transcripts (
                 id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL, meeting_id TEXT NOT NULL,
                 transcript_id TEXT NOT NULL, content TEXT NOT NULL,
@@ -303,15 +474,46 @@ class Store:
                 task_url TEXT, PRIMARY KEY (user_id, action_key))""",
             "DROP TABLE IF EXISTS chat_connections",
             "DROP TABLE IF EXISTS outbox",
-            "CREATE INDEX IF NOT EXISTS jobs_ready ON jobs(status, due, id)",
-            """CREATE UNIQUE INDEX IF NOT EXISTS jobs_pending_payload
-            ON jobs(payload) WHERE status='pending'""",
-            "CREATE INDEX IF NOT EXISTS activity_ready ON activity_outbox(status, due, id)",
-            "CREATE INDEX IF NOT EXISTS meetings_user ON meetings(user_id, created DESC)",
+            # Superseded by meetings_recent, which matches the listing's ORDER BY.
+            "DROP INDEX IF EXISTS meetings_user",
+            *INDEXES,
         )
         with self.connect() as db:
             for statement in statements:
                 db.execute(statement)
+        self.backfill_meeting_facts()
+
+    def backfill_meeting_facts(self):
+        """Populate the derived columns for rows written before they existed.
+
+        Keyed on meeting_id being NULL, so this is a no-op on every start after
+        the first. A row whose content has no meeting_id at all cannot be matched
+        by the sweep either way; it is written back with its other facts so the
+        scan does not keep finding it.
+        """
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT id, content FROM meetings WHERE meeting_id IS NULL"
+            ).fetchall()
+            if not rows:
+                return
+            db.executemany(
+                """UPDATE meetings SET meeting_id=?, source=?, settled=?,
+                newest_transcript_at=?, occurred_at=COALESCE(occurred_at, ?) WHERE id=?""",
+                [
+                    (
+                        facts["meeting_id"] or "",
+                        facts["source"],
+                        facts["settled"],
+                        facts["newest_transcript_at"],
+                        facts["occurred_at"],
+                        row["id"],
+                    )
+                    for row in rows
+                    for facts in [meeting_facts(json.loads(row["content"]))]
+                ],
+            )
+        log.info("Backfilled meeting sync columns for row_count=%s", len(rows))
 
     @contextmanager
     def connect(self):
@@ -678,16 +880,11 @@ class Store:
         with self.connect() as db:
             occurred_at = _meeting_occurred_at(content)
             if content.get("meeting_id"):
-                query = (
-                    """SELECT id, content FROM meetings
-                    WHERE user_id=? AND content::jsonb ->> 'meeting_id'=?
-                    ORDER BY id DESC LIMIT 1"""
-                    if self.database_url
-                    else """SELECT id, content FROM meetings
-                    WHERE user_id=? AND json_extract(content, '$.meeting_id')=?
-                    ORDER BY id DESC LIMIT 1"""
-                )
-                row = db.execute(query, (user_id, content["meeting_id"])).fetchone()
+                row = db.execute(
+                    """SELECT id, content FROM meetings WHERE user_id=? AND meeting_id=?
+                    ORDER BY id DESC LIMIT 1""",
+                    (user_id, content["meeting_id"]),
+                ).fetchone()
                 merged = json.loads(row["content"]) if row else {}
                 # Keep every transcript and insight segment under its meeting, in either arrival order.
                 for kind, field in (("insight", "insights"), ("transcript", "transcripts")):
@@ -707,19 +904,43 @@ class Store:
                 merged, _ = dedupe_content(merged)
                 occurred_at = _meeting_occurred_at(merged) or occurred_at
                 if row:
+                    facts = meeting_facts(merged)
                     db.execute(
                         """UPDATE meetings SET subject=?, content=?, created=?,
-                        occurred_at=COALESCE(?, occurred_at) WHERE id=?
+                        occurred_at=COALESCE(?, occurred_at), source=?, settled=?,
+                        newest_transcript_at=? WHERE id=?
                         AND EXISTS (SELECT 1 FROM users WHERE id=? AND enabled=1)""",
-                        (subject, json.dumps(merged), time.time(), occurred_at, row["id"], user_id),
+                        (
+                            subject,
+                            json.dumps(merged),
+                            time.time(),
+                            occurred_at,
+                            facts["source"],
+                            facts["settled"],
+                            facts["newest_transcript_at"],
+                            row["id"],
+                            user_id,
+                        ),
                     )
                     return
                 content = merged
+            facts = meeting_facts(content)
             # Recheck enrollment in case the user disconnected while Graph was responding.
             db.execute(
-                """INSERT INTO meetings(user_id, subject, content, created, occurred_at)
-                SELECT id, ?, ?, ?, ? FROM users WHERE id=? AND enabled=1""",
-                (subject, json.dumps(content), time.time(), occurred_at, user_id),
+                """INSERT INTO meetings(user_id, subject, content, created, occurred_at,
+                meeting_id, source, settled, newest_transcript_at)
+                SELECT id, ?, ?, ?, ?, ?, ?, ?, ? FROM users WHERE id=? AND enabled=1""",
+                (
+                    subject,
+                    json.dumps(content),
+                    time.time(),
+                    occurred_at,
+                    facts["meeting_id"] or "",
+                    facts["source"],
+                    facts["settled"],
+                    facts["newest_transcript_at"],
+                    user_id,
+                ),
             )
 
     def save_transcript(self, user_id: str, meeting_id: str, transcript_id: str, text: str):
@@ -747,11 +968,16 @@ class Store:
                 "SELECT id, content FROM meetings WHERE user_id=? ORDER BY created DESC, id DESC",
                 (user_id,),
             ).fetchall()
-            uploads = [(row["id"], json.loads(row["content"])) for row in rows
-                       if json.loads(row["content"]).get("source") == "upload"]
+            uploads = [
+                (row["id"], json.loads(row["content"]))
+                for row in rows
+                if json.loads(row["content"]).get("source") == "upload"
+            ]
             for row_id, content in uploads[1:]:
-                db.execute("DELETE FROM transcripts WHERE user_id=? AND meeting_id=?",
-                           (user_id, content["meeting_id"]))
+                db.execute(
+                    "DELETE FROM transcripts WHERE user_id=? AND meeting_id=?",
+                    (user_id, content["meeting_id"]),
+                )
                 db.execute("DELETE FROM meetings WHERE user_id=? AND id=?", (user_id, row_id))
 
     def meetings(self, user_id: str) -> list[dict]:
@@ -770,3 +996,152 @@ class Store:
                 (meeting_id, user_id),
             ).fetchone()
         return dict(row, content=json.loads(row["content"])) if row else None
+
+    def find_meeting(self, user_id: str, meeting_id: str) -> dict | None:
+        """One meeting's content by its Graph id, without reading the others.
+
+        Matches save_meeting's choice of row, so a caller that reads here and
+        writes there cannot end up looking at a different duplicate.
+        """
+        with self.connect() as db:
+            row = db.execute(
+                """SELECT content FROM meetings WHERE user_id=? AND meeting_id=?
+                ORDER BY id DESC LIMIT 1""",
+                (user_id, meeting_id),
+            ).fetchone()
+        return json.loads(row["content"]) if row else None
+
+    def sync_candidates(
+        self,
+        user_id: str,
+        *,
+        since: float,
+        within_window: bool = True,
+        only_unsettled: bool = True,
+    ) -> list[str]:
+        """The meetings worth a Graph poll, newest first.
+
+        Answered entirely from the derived columns: this runs once a minute per
+        user, and reading every saved card and summary to decide it was the
+        sweep's dominant cost.
+
+        Both bounds are dropped for the manual paths. within_window=False reaches
+        meetings old enough that the background sweep has given up on them, for
+        recovery; only_unsettled=False keeps Refresh exhaustive, which is the
+        difference between backing off in the background and re-checking
+        everything because a person asked.
+        """
+        conditions = [
+            "user_id=?",
+            "created>=?",
+            "(source IS NULL OR source<>'upload')",
+            "meeting_id<>''",
+        ]
+        parameters = [user_id, since]
+        if only_unsettled:
+            conditions.append("settled=0")
+        if within_window:
+            # NULL means "we could not tell", which has to keep polling: see
+            # newest_transcript_at.
+            conditions.append("(newest_transcript_at IS NULL OR newest_transcript_at>=?)")
+            parameters.append(time.time() - PUBLICATION_WINDOW_HOURS * 3600)
+        with self.connect() as db:
+            rows = db.execute(
+                f"SELECT meeting_id FROM meetings WHERE {' AND '.join(conditions)} "
+                "ORDER BY COALESCE(occurred_at, created) DESC, id DESC",
+                tuple(parameters),
+            ).fetchall()
+        # Duplicate rows for one meeting are retained deliberately; poll once.
+        return list(dict.fromkeys(row["meeting_id"] for row in rows))
+
+    def transcript_aliases(self, user_id: str) -> set[tuple[str, str]]:
+        """Every (meeting, transcript alias) pair this user already holds.
+
+        Projects the transcripts array in SQL rather than loading whole rows:
+        the saved cards and summaries beside it are the bulk of the content and
+        discovery never looks at them.
+        """
+        projection = (
+            "content::jsonb -> 'transcripts'"
+            if self.database_url
+            else "json_extract(content, '$.transcripts')"
+        )
+        with self.connect() as db:
+            rows = db.execute(
+                f"SELECT meeting_id, {projection} AS transcripts FROM meetings WHERE user_id=?",
+                (user_id,),
+            ).fetchall()
+        pairs = set()
+        for row in rows:
+            entries = row["transcripts"]
+            # SQLite returns the projection as text; psycopg decodes jsonb already.
+            if isinstance(entries, str):
+                entries = json.loads(entries)
+            for entry in entries or []:
+                for alias in artifact_aliases(entry.get("transcript") or {}):
+                    pairs.add((row["meeting_id"], alias))
+        return pairs
+
+    def request_repair(self):
+        """Ask whichever process runs the worker to re-check subscriptions.
+
+        Goes through the database so it still arrives when the web and worker
+        roles are separate containers, or when more than one web replica is
+        serving. An in-process worker also has the asyncio.Event, which is
+        faster; both are consumed together so a repair never runs twice.
+        """
+        self.put("repair", "subscriptions", {"at": time.time()}, ttl=3600)
+
+    def take_repair(self) -> bool:
+        # Read before popping: the worker asks once a second, and a DELETE every
+        # second is WAL churn for an answer that is almost always "no".
+        if not self.get("repair", "subscriptions"):
+            return False
+        return self.pop("repair", "subscriptions") is not None
+
+    def prune(
+        self, *, job_days: float = 1, failed_job_days: float = 7, meeting_days: float | None = None
+    ) -> dict:
+        """Delete finished work the application will never read again.
+
+        Jobs accumulate at roughly one row per user per minute from polling
+        alone, and nothing removed them. Failed jobs are kept longer because
+        they are the diagnostic record of what went wrong.
+
+        Meeting retention is opt-in and off by default: deleting a user's saved
+        meetings is a product decision, not a storage one, so it happens only
+        when an operator sets a window.
+        """
+        now = time.time()
+        counts = {}
+        with self.connect() as db:
+            counts["jobs"] = db.execute(
+                "DELETE FROM jobs WHERE status NOT IN ('pending', 'failed') AND due<?",
+                (now - job_days * 86400,),
+            ).rowcount
+            counts["failed_jobs"] = db.execute(
+                "DELETE FROM jobs WHERE status='failed' AND due<?",
+                (now - failed_job_days * 86400,),
+            ).rowcount
+            counts["meetings"] = 0
+            counts["transcripts"] = 0
+            if meeting_days is not None:
+                cutoff = now - meeting_days * 86400
+                # Transcript rows are reached through their meeting; once that is
+                # gone nothing can load them, so they would leak silently. Deleted
+                # by naming the expiring meetings rather than by sweeping for
+                # orphans: process_transcript saves a transcript just before its
+                # meeting row exists, and an orphan sweep would race that window.
+                expiring = db.execute(
+                    "SELECT user_id, meeting_id FROM meetings WHERE COALESCE(occurred_at, created)<?",
+                    (cutoff,),
+                ).fetchall()
+                if expiring:
+                    counts["transcripts"] = db.executemany(
+                        "DELETE FROM transcripts WHERE user_id=? AND meeting_id=?",
+                        [(row["user_id"], row["meeting_id"]) for row in expiring],
+                    ).rowcount
+                counts["meetings"] = db.execute(
+                    "DELETE FROM meetings WHERE COALESCE(occurred_at, created)<?", (cutoff,)
+                ).rowcount
+        return counts

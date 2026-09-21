@@ -63,7 +63,7 @@ class OpenRouter:
     def __init__(self, config: Settings):
         self.config = config
 
-    async def summarize(self, transcript_id: str, subject: str, transcript_text: str) -> Insight:
+    async def summarize(self, key: str, subject: str, transcript_text: str) -> Insight:
         text = transcript_text[:MAX_TRANSCRIPT_CHARS]
         models = [self.config.openrouter_model]
         for candidate in (FALLBACK_MODEL, FREE_ROUTER_MODEL):
@@ -72,7 +72,7 @@ class OpenRouter:
         error: ValueError | None = None
         for position, model in enumerate(models):
             try:
-                return await self._summarize_with_model(model, transcript_id, subject, text)
+                return await self._summarize_with_model(model, key, subject, text)
             except OpenRouterAuthError:
                 # Retrying with a different model can't fix a bad key.
                 raise
@@ -87,9 +87,7 @@ class OpenRouter:
                     )
         raise error
 
-    async def _summarize_with_model(
-        self, model: str, transcript_id: str, subject: str, text: str
-    ) -> Insight:
+    async def _summarize_with_model(self, model: str, key: str, subject: str, text: str) -> Insight:
         payload = {
             "model": model,
             "messages": [
@@ -120,7 +118,7 @@ class OpenRouter:
         except (KeyError, IndexError, TypeError, ValueError) as error:
             raise ValueError("OpenRouter did not return a usable summary.") from error
         try:
-            return Insight.model_validate({**data, "id": f"openrouter:{transcript_id}"})
+            return Insight.model_validate({**data, "id": f"openrouter:{key}"})
         except ValidationError as error:
             raise ValueError("OpenRouter returned an unexpected summary shape.") from error
 

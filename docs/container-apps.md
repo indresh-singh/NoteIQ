@@ -3,6 +3,9 @@
 Azure Container Apps replaces the Mac, tunnel and gateway. These instructions use
 **Consumption** in **UAE North**. Configure [Azure Database for PostgreSQL](postgresql.md)
 before relying on persistent data or deploying multiple replicas.
+The application deploys as a single replica running both the web tier and the background
+worker; [scaling](scaling.md) covers the capacity that gives you and how to separate the
+two when you outgrow it.
 The subscription must allow Container Apps and Azure Container Registry resources.
 
 ## 1. Build and deploy the container

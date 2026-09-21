@@ -15,11 +15,15 @@ import json
 from datetime import datetime, timezone
 
 from app.config import settings
-from app.store import Store, dedupe_content
+from app.store import Store, dedupe_content, meeting_facts
 
 
-def plan(store: Store) -> list[dict]:
-    """Every row needing work, with the cleaned content ready to write."""
+def scan(store: Store) -> tuple[list[dict], int]:
+    """Rows needing work, with the cleaned content ready to write, and rows read.
+
+    The count is returned so a clean result can say how much it looked at: "no
+    duplicates found" and "no rows found" are otherwise indistinguishable.
+    """
     with store.connect() as db:
         rows = db.execute("SELECT id, user_id, subject, content FROM meetings").fetchall()
     work = []
@@ -38,7 +42,7 @@ def plan(store: Store) -> list[dict]:
                     "report": report,
                 }
             )
-    return work
+    return work, len(rows)
 
 
 def snapshot(store: Store) -> str:
@@ -59,10 +63,20 @@ def snapshot(store: Store) -> str:
 def apply(store: Store, work: list[dict]) -> tuple[int, list[int]]:
     written, skipped = 0, []
     for item in work:
+        # Collapsing duplicates can change whether a meeting still counts as
+        # settled, and the sweep reads that from the column rather than the JSON.
+        facts = meeting_facts(json.loads(item["after"]))
         with store.connect() as db:
             changed = db.execute(
-                "UPDATE meetings SET content=? WHERE id=? AND content=?",
-                (item["after"], item["id"], item["before"]),
+                """UPDATE meetings SET content=?, settled=?, newest_transcript_at=?
+                WHERE id=? AND content=?""",
+                (
+                    item["after"],
+                    facts["settled"],
+                    facts["newest_transcript_at"],
+                    item["id"],
+                    item["before"],
+                ),
             ).rowcount
         if changed:
             written += 1
@@ -78,7 +92,7 @@ def main() -> int:
 
     config = settings()
     store = Store(config.database, config.backup_database, config.database_url)
-    work = plan(store)
+    work, scanned = scan(store)
 
     for item in work:
         summary = ", ".join(
@@ -88,10 +102,11 @@ def main() -> int:
         print(f"meeting row={item['id']} subject={item['subject']!r} {summary}")
 
     if not work:
-        print("No duplicates found.")
+        print(f"Scanned {scanned} meeting(s); no duplicates found.")
         return 0
     if not args.apply:
-        print(f"\n{len(work)} row(s) would change. Re-run with --apply to write.")
+        print(f"\nScanned {scanned} meeting(s); {len(work)} would change.")
+        print("Re-run with --apply to write.")
         return 0
 
     table = snapshot(store)

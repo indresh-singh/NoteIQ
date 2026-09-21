@@ -27,6 +27,15 @@ class Settings(BaseModel):
     openrouter_api_key: SecretStr | None = None
     openrouter_model: str | None = None
     ai_provider: Literal["copilot", "openrouter"] = "copilot"
+    # "web" and "worker" split the two halves into separate containers so the web
+    # tier can scale out; "all" keeps both in one process, as a single replica.
+    role: Literal["all", "web", "worker"] = "all"
+    job_concurrency: int = 4
+    meeting_retention_days: float | None = None
+
+    @property
+    def runs_worker(self) -> bool:
+        return self.role in {"all", "worker"}
 
     @property
     def redirect_uri(self) -> str:
@@ -64,6 +73,9 @@ def settings() -> Settings:
         openrouter_api_key=os.getenv("OPENROUTER_API_KEY") or None,
         openrouter_model=os.getenv("OPENROUTER_MODEL") or None,
         ai_provider=os.getenv("AI_PROVIDER", "copilot"),
+        role=os.getenv("NOTEIQ_ROLE", "all"),
+        job_concurrency=os.getenv("NOTEIQ_JOB_CONCURRENCY", "4"),
+        meeting_retention_days=os.getenv("NOTEIQ_MEETING_RETENTION_DAYS") or None,
     )
     url = urlsplit(config.public_url)
     if url.scheme != "https" or not url.hostname or url.path or url.query or url.fragment:
@@ -87,6 +99,12 @@ def settings() -> Settings:
         raise ValueError(
             "Configure CLICKUP_CLIENT_ID, CLICKUP_CLIENT_SECRET and CLICKUP_TOKEN_KEY together"
         )
+    if not 1 <= config.job_concurrency <= 32:
+        raise ValueError("NOTEIQ_JOB_CONCURRENCY must be between 1 and 32")
+    if config.meeting_retention_days is not None and config.meeting_retention_days < 7:
+        # Below the seven days discovery itself looks back, retention would
+        # delete meetings the next sweep immediately re-fetches.
+        raise ValueError("NOTEIQ_MEETING_RETENTION_DAYS must be at least 7")
     if bool(config.openrouter_api_key) != bool(config.openrouter_model):
         raise ValueError("Configure OPENROUTER_API_KEY and OPENROUTER_MODEL together")
     if config.ai_provider == "openrouter" and not config.openrouter_enabled:
