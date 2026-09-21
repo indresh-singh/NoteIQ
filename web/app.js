@@ -278,11 +278,17 @@ function renderMeetings(meetings, clickup, aiProvider, custom = false) {
         activeContentButton = button;
         buttons.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b === button)));
         content.replaceChildren();
+        let headingShown = false;
         for (const segment of byProvider[selected]) {
           const insight = segment.insight;
           const items = heading === "KEY NOTES" ? insight?.meetingNotes : insight?.actionItems;
           if (items?.length) {
-            content.append(element("h3", heading === "KEY NOTES" ? "Meeting notes" : "Follow-up tasks"));
+            // One heading for the section, not one per stored insight: a meeting
+            // transcribed in two parts has two insights and still has one set of notes.
+            if (!headingShown) {
+              content.append(element("h3", heading === "KEY NOTES" ? "Meeting notes" : "Follow-up tasks"));
+              headingShown = true;
+            }
             for (const item of items) {
               content.append(heading === "KEY NOTES" ? renderCollapsibleNote(item) : renderNote(item));
               if (heading === "ACTION ITEMS") {

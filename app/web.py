@@ -561,7 +561,10 @@ def create_app(
     async def sync(request: Request, user: dict = Depends(current_user)):
         from app.sync import sync_now
 
-        request.app.state.repair.set()
+        # Refresh asks Graph what is new; it does not force a subscription
+        # repair. Forcing one PATCHes every subscription ahead of the fetch the
+        # click is waiting for. Renewal still runs on its own schedule, and
+        # /api/reconnect remains the explicit repair path.
         queued = await sync_now(request.app.state.store, request.app.state.graph, user["id"])
         return {"queued": queued}
 

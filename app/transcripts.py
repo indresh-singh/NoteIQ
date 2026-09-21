@@ -117,6 +117,11 @@ async def process_transcript(event: TranscriptEvent, graph: GraphClient, store: 
                 "meeting_id": event.meeting_id,
                 "transcript": {
                     "id": event.transcript_id,
+                    # getAllTranscripts and a meeting's own /transcripts list can
+                    # name the same transcript differently. Record both so the
+                    # next sync recognises it instead of fetching and
+                    # summarising it a second time under the other id.
+                    "source_id": metadata.get("id"),
                     "local_id": local_id,
                     "createdDateTime": metadata.get("createdDateTime"),
                     "contentCorrelationId": metadata.get("contentCorrelationId"),

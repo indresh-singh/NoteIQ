@@ -5,7 +5,14 @@ import pytest
 from app.config import settings
 from app.insights import process_insight
 from app.models import InsightEvent, MeetingSync, UserSync, parse_event
-from app.sync import discover_meetings, recover_from_link, sync_meeting
+from app.sync import (
+    discover_meetings,
+    queue_sync,
+    recover_from_link,
+    settled,
+    sync_meeting,
+    sync_now,
+)
 from tests.conftest import USER
 
 
@@ -96,6 +103,14 @@ def test_refresh_discovers_new_transcripts_immediately(client, store, signed_in,
     job = parse_event(store.next_job()["payload"])
     assert job.meeting_id == "new-meeting"
     assert job.transcript_id == "t"
+    # Refresh must not force a subscription repair: that PATCHes every
+    # subscription ahead of the fetch the click is waiting for.
+    assert not client.app.state.repair.is_set()
+
+
+def test_reconnect_still_forces_a_subscription_repair(client, store, signed_in):
+    """Refresh backs off, but the explicit repair path must keep working."""
+    assert client.post("/api/reconnect", headers=signed_in, json={}).status_code == 200
     assert client.app.state.repair.is_set()
 
 
@@ -128,3 +143,66 @@ async def test_discovery_does_not_query_for_unenrolled_user(store, graph):
     event = UserSync(user_id="99999999-9999-9999-9999-999999999999")
     assert await discover_meetings(event, graph, store) == "SKIPPED_NOT_ENROLLED"
     graph.list.assert_not_called()
+
+
+def transcript_only():
+    return {"meeting_id": "m", "transcripts": [{"transcript": {"id": "t"}}]}
+
+
+def both_artifacts():
+    return {
+        "meeting_id": "m",
+        "transcripts": [{"transcript": {"id": "t"}}],
+        "insights": [{"insight": {"id": "i"}}],
+    }
+
+
+def test_settled_requires_both_artifacts():
+    assert settled(both_artifacts())
+    assert not settled(transcript_only())
+    assert not settled({"meeting_id": "m", "insights": [{"insight": {"id": "i"}}]})
+    assert not settled({"meeting_id": "m"})
+    # Rows written before the list shape still read correctly.
+    assert settled({"meeting_id": "m", "transcript": {"id": "t"}, "insight": {"id": "i"}})
+    assert not settled({"meeting_id": "m", "transcript": {"id": "t"}})
+
+
+def test_polling_stops_once_a_meeting_has_both_artifacts(store):
+    store.save_meeting(USER, "Done", both_artifacts())
+    store.save_meeting(USER, "Waiting", dict(transcript_only(), meeting_id="waiting"))
+    assert queue_sync(store, USER) == 1
+    queued = [parse_event(store.claim_job()["payload"]) for _ in range(1)]
+    assert [job.meeting_id for job in queued] == ["waiting"]
+    assert store.claim_job() is None
+
+
+def test_discovery_still_runs_when_every_meeting_is_settled(store):
+    """Otherwise a newly organised meeting would never be found again."""
+    store.save_meeting(USER, "Done", both_artifacts())
+    assert queue_sync(store, USER, discover=True) == 1
+    assert isinstance(parse_event(store.claim_job()["payload"]), UserSync)
+
+
+async def test_refresh_still_rechecks_a_settled_meeting(store, graph):
+    """Polling backs off, but the manual Refresh sweep stays exhaustive."""
+    store.save_meeting(USER, "Done", both_artifacts())
+    graph.list.return_value = [{"id": "new-insight"}]
+    await sync_now(store, graph, USER)
+    paths = [call.args[0] for call in graph.list.call_args_list]
+    assert any("aiInsights" in path for path in paths)
+
+
+def test_a_second_transcript_reopens_polling_until_its_insight_lands():
+    """Graph creates one insight per transcript; the first insight is not the end."""
+    two_transcripts_one_insight = {
+        "meeting_id": "m",
+        "transcripts": [{"transcript": {"id": "t1"}}, {"transcript": {"id": "t2"}}],
+        "insights": [{"insight": {"id": "i1"}}],
+    }
+    assert not settled(two_transcripts_one_insight)
+    two_transcripts_one_insight["insights"].append({"insight": {"id": "i2"}})
+    assert settled(two_transcripts_one_insight)
+
+
+def test_an_insight_without_a_transcript_is_not_settled():
+    assert not settled({"meeting_id": "m", "insights": [{"insight": {"id": "i"}}]})

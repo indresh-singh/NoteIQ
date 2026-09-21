@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 from app.config import settings
-from app.models import Insight, TranscriptEvent
+from app.models import Insight, TranscriptEvent, parse_event
 from app.transcripts import process_transcript
 from app.worker import run_job
 from tests.conftest import USER
@@ -172,3 +172,34 @@ async def test_openrouter_failure_does_not_fail_transcript_processing(monkeypatc
 
     assert await process_transcript(event(), graph, store) == "TRANSCRIPT_SAVED"
     assert store.meetings(USER)[0]["content"].get("insights") is None
+
+
+async def test_both_id_forms_are_recorded_so_the_next_sync_skips_the_transcript(
+    store, graph, samples
+):
+    """getAllTranscripts and a meeting's /transcripts list can name it differently."""
+    from app.models import MeetingSync
+    from app.sync import sync_meeting
+
+    graph.request.side_effect = [
+        samples["meeting"],
+        {"id": "detail-form", "createdDateTime": "2026-09-21T10:57:41Z"},
+        "WEBVTT\n00:01 --> 00:02\n<v Ada>Hello</v>",
+    ]
+    event = TranscriptEvent(user_id=USER, meeting_id="m", transcript_id="listing-form")
+    assert await process_transcript(event, graph, store) == "TRANSCRIPT_SAVED"
+
+    saved = store.meetings(USER)[0]["content"]["transcripts"][0]["transcript"]
+    assert saved["id"] == "listing-form"
+    assert saved["source_id"] == "detail-form"
+
+    # The per-meeting list names it "detail-form"; that must not look new.
+    graph.request.side_effect = None
+    graph.list.return_value = [{"id": "detail-form"}]
+    await sync_meeting(MeetingSync(user_id=USER, meeting_id="m"), graph, store)
+    queued = []
+    while (job := store.claim_job()):
+        queued.append(parse_event(job["payload"]))
+    assert not [job for job in queued if isinstance(job, TranscriptEvent)], (
+        "the transcript was re-queued under its other id"
+    )

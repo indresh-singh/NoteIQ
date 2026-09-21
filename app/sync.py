@@ -14,12 +14,32 @@ from app.store import digest
 log = logging.getLogger(__name__)
 
 
+def settled(content: dict) -> bool:
+    """True once every transcript has its insight, leaving polling nothing to find.
+
+    Graph creates one insight per transcript, so a meeting whose transcription
+    was stopped and restarted is not finished at its first insight: counting
+    both sides keeps polling alive until the later one lands. Revisions are a
+    separate matter -- Copilot rewrites an insight under its existing id, which
+    a poll reports as already known, so only the webhook ever delivers those.
+    """
+    transcripts = content.get("transcripts") or (
+        [content["transcript"]] if content.get("transcript") else []
+    )
+    insights = content.get("insights") or (
+        [content["insight"]] if content.get("insight") else []
+    )
+    return bool(transcripts) and len(insights) >= len(transcripts)
+
+
 def queue_sync(store, user_id, *, discover=False):
     meetings = store.meetings(user_id)
     payloads = [
         MeetingSync(user_id=user_id, meeting_id=m["content"]["meeting_id"]).model_dump_json()
         for m in meetings
-        if m["created"] >= time.time() - 7 * 86400 and m["content"].get("source") != "upload"
+        if m["created"] >= time.time() - 7 * 86400
+        and m["content"].get("source") != "upload"
+        and not settled(m["content"])
     ]
     if discover:
         payloads.append(UserSync(user_id=user_id).model_dump_json())

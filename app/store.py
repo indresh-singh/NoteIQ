@@ -103,6 +103,22 @@ def digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def job_priority(payload: str) -> int:
+    """Fetching content outranks polling for it.
+
+    A queued transcript or insight is work Graph has already published; a
+    MeetingSync or UserSync is only a question about whether anything exists.
+    Without this, one artifact waits behind a minute's worth of polling for
+    every meeting the user has, which is how a five-second fetch becomes a
+    two-minute one.
+    """
+    try:
+        fields = json.loads(payload)
+    except ValueError:
+        return 1
+    return 0 if "insight_id" in fields or "transcript_id" in fields else 1
+
+
 class Store:
     def __init__(self, path: Path, backup_path: Path | None = None, database_url=None):
         self.path = path
@@ -141,7 +157,8 @@ class Store:
                 );
                 CREATE TABLE IF NOT EXISTS jobs (
                     id INTEGER PRIMARY KEY, payload TEXT NOT NULL, attempts INTEGER DEFAULT 0,
-                    due REAL NOT NULL, status TEXT NOT NULL DEFAULT 'pending'
+                    due REAL NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+                    priority INTEGER NOT NULL DEFAULT 1
                 );
                 CREATE TABLE IF NOT EXISTS meetings (
                     id INTEGER PRIMARY KEY, user_id TEXT NOT NULL, subject TEXT NOT NULL,
@@ -178,6 +195,8 @@ class Store:
                 db.execute("ALTER TABLE clickup_connections ADD COLUMN list_name TEXT")
             with suppress(sqlite3.OperationalError):
                 db.execute("ALTER TABLE meetings ADD COLUMN occurred_at REAL")
+            with suppress(sqlite3.OperationalError):
+                db.execute("ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 1")
         # Some managed volume drivers set permissions at mount time and do not implement chmod.
         with suppress(OSError):
             path.chmod(0o600)
@@ -195,6 +214,7 @@ class Store:
             """CREATE TABLE IF NOT EXISTS jobs (
                 id BIGSERIAL PRIMARY KEY, payload TEXT NOT NULL, attempts INTEGER DEFAULT 0,
                 due DOUBLE PRECISION NOT NULL, status TEXT NOT NULL DEFAULT 'pending')""",
+            "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 1",
             """CREATE TABLE IF NOT EXISTS meetings (
                 id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL, subject TEXT NOT NULL,
                 content TEXT NOT NULL, created DOUBLE PRECISION NOT NULL)""",
@@ -502,14 +522,18 @@ class Store:
         with self.connect() as db:
             if self.database_url:
                 db.executemany(
-                    "INSERT INTO jobs(payload, due) VALUES (?, ?) ON CONFLICT DO NOTHING",
-                    [(payload, time.time()) for payload in payloads],
+                    "INSERT INTO jobs(payload, due, priority) VALUES (?, ?, ?) "
+                    "ON CONFLICT DO NOTHING",
+                    [(payload, time.time(), job_priority(payload)) for payload in payloads],
                 )
             else:
                 db.executemany(
-                    "INSERT INTO jobs(payload, due) SELECT ?, ? WHERE NOT EXISTS "
+                    "INSERT INTO jobs(payload, due, priority) SELECT ?, ?, ? WHERE NOT EXISTS "
                     "(SELECT 1 FROM jobs WHERE payload=? AND status='pending')",
-                    [(payload, time.time(), payload) for payload in payloads],
+                    [
+                        (payload, time.time(), job_priority(payload), payload)
+                        for payload in payloads
+                    ],
                 )
 
     def pending_job_count(self) -> int:
@@ -519,7 +543,8 @@ class Store:
     def next_job(self) -> dict | None:
         with self.connect() as db:
             row = db.execute(
-                "SELECT * FROM jobs WHERE status='pending' AND due<=? ORDER BY id LIMIT 1",
+                "SELECT * FROM jobs WHERE status='pending' AND due<=? "
+                "ORDER BY priority, id LIMIT 1",
                 (time.time(),),
             ).fetchone()
         return dict(row) if row else None
@@ -530,7 +555,7 @@ class Store:
                 row = db.execute(
                     """WITH candidate AS (
                         SELECT id FROM jobs WHERE status='pending' AND due<=?
-                        ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED
+                        ORDER BY priority, id LIMIT 1 FOR UPDATE SKIP LOCKED
                     )
                     UPDATE jobs SET due=? FROM candidate
                     WHERE jobs.id=candidate.id RETURNING jobs.*""",
@@ -540,7 +565,7 @@ class Store:
                 row = db.execute(
                     """UPDATE jobs SET due=? WHERE id=(
                         SELECT id FROM jobs WHERE status='pending' AND due<=?
-                        ORDER BY id LIMIT 1
+                        ORDER BY priority, id LIMIT 1
                     ) RETURNING *""",
                     (time.time() + 300, time.time()),
                 ).fetchone()
