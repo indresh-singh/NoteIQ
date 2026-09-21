@@ -7,6 +7,7 @@ Install its browser once with: uv run --with playwright python -m playwright ins
 import html
 import json
 import secrets
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, patch
@@ -52,10 +53,11 @@ def main():
             public_url=ORIGIN,
             database=Path(temporary) / "test.sqlite3",
         )
+        graph = AsyncMock()
         with (
             patch("app.web.identity_client", FakeIdentity),
             TestClient(
-                create_app(config, AsyncMock(), background=False),
+                create_app(config, graph, background=False),
                 base_url=ORIGIN,
             ) as client,
             sync_playwright() as playwright,
@@ -63,6 +65,7 @@ def main():
             browser = playwright.chromium.launch(args=["--host-resolver-rules=MAP * ~NOTFOUND"])
             context = browser.new_context(viewport={"width": 1280, "height": 950})
             errors = []
+            meetings_hits = []
 
             def route_request(route):
                 request = route.request
@@ -81,6 +84,8 @@ def main():
                         + '">',
                     )
                 elif url.hostname == "noteiq.test":
+                    if url.path == "/api/meetings":
+                        meetings_hits.append(time.monotonic())
                     response = client.request(
                         request.method,
                         request.url,
@@ -158,7 +163,7 @@ def main():
             )
             page.get_by_role("button", name="Refresh", exact=True).click()
             expect(page.get_by_role("heading", name="FY27 Budget Review")).to_be_visible()
-            expect(page.locator(".card-content details")).not_to_have_attribute("open", "")
+            expect(page.locator(".card-content details[open]")).to_have_count(0)
             page.locator(".card-content summary").first.click()
             expect(page.locator(".card-content")).to_contain_text("Launch date remains unchanged")
             page.get_by_role("button", name="Action items", exact=True).click()
@@ -174,6 +179,43 @@ def main():
             expect(page.locator(".transcript-text")).to_contain_text("Ada: Demo transcript")
             expect(page.locator("#notification-status")).to_contain_text("Teams Activity")
             expect(page.locator("#chat-picker")).to_have_count(0)
+
+            # A sync that queues work must re-read within seconds rather than
+            # waiting for the 15-second interval. The worker is disabled here,
+            # so the card is saved by hand the way process_insight would.
+            graph.list.return_value = [{"id": "chase-t", "meetingId": "chase-meeting"}]
+            meetings_hits.clear()
+            started = time.monotonic()
+            page.get_by_role("button", name="Refresh", exact=True).click()
+            expect(page.locator("#status")).to_contain_text("Found new activity")
+            store.save_meeting(
+                USER,
+                "Chase Arrival",
+                {
+                    "meeting_id": "chase-meeting",
+                    "insight": insight.model_dump(mode="json"),
+                    "card": build_card(insight, "Chase Arrival"),
+                },
+            )
+            expect(page.get_by_role("heading", name="Chase Arrival")).to_be_visible(timeout=8000)
+            assert time.monotonic() - started < 8, "the chase did not beat the 15-second interval"
+            page.wait_for_timeout(6000)
+            # Within 8s: the click's own read plus chase passes at 2s and 5s. The
+            # 15-second interval can add at most one, so three proves a chase ran.
+            early = [hit for hit in meetings_hits if hit - started < 8]
+            assert len(early) >= 3, f"expected chase re-reads, saw {len(early)}"
+
+            # A newer chase cancels the older ones instead of stacking timers.
+            meetings_hits.clear()
+            for _ in range(3):
+                page.get_by_role("button", name="Refresh", exact=True).click()
+                expect(page.get_by_role("button", name="Refresh", exact=True)).to_be_enabled()
+                page.wait_for_timeout(1000)
+            page.wait_for_timeout(12000)
+            # Only the newest chase survives: three click reads, four passes and at
+            # most one interval tick. Three stacked chases would add eight more.
+            assert len(meetings_hits) <= 10, f"chases are stacking: {len(meetings_hits)} reads"
+
             page.reload()
             expect(page.get_by_role("heading", name="FY27 Budget Review")).to_be_visible(
                 timeout=15000
@@ -210,7 +252,8 @@ def main():
             assert not errors, errors
             browser.close()
             print(
-                "Browser check passed: popup sign-in, enrollment, cards, buttons, reload, mobile layout, disconnect."
+                "Browser check passed: popup sign-in, enrollment, cards, buttons, "
+                "refresh chase, reload, mobile layout, disconnect."
             )
 
 

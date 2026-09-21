@@ -13,6 +13,7 @@ let syncMessage = "";
 let previousMeetings = "";
 let previousUploads = "";
 let previousClickUp = "";
+let chaseId = 0;
 try { token = sessionStorage.getItem("noteiq-session") || ""; } catch { /* Memory-only fallback. */ }
 
 function remember(value) {
@@ -27,6 +28,7 @@ function showError(message = "") {
 
 function signedOut() {
   syncMessage = "";
+  chaseId++;
   remember("");
   previousMeetings = "";
   previousUploads = "";
@@ -496,6 +498,19 @@ $("#clickup-shortcut").onclick = () => {
   settings.scrollIntoView({behavior: "smooth", block: "start"});
 };
 
+// A sync only queues the fetch; the worker completes it a moment later. Re-read
+// a few times on a tightening schedule so the card fills in without waiting for
+// the 15-second interval. Passes run one after another, so refresh()'s `loading`
+// guard never silently drops one.
+async function chaseResults() {
+  const mine = ++chaseId;
+  for (const delay of [2000, 3000, 5000, 10000]) {
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    if (mine !== chaseId || !token || document.hidden) return;
+    await refresh();
+  }
+}
+
 async function refresh(sync = false) {
   if (!token || loading) return;
   const startedWith = token;
@@ -513,6 +528,7 @@ async function refresh(sync = false) {
       syncMessage = result.queued
         ? "Found new activity. Fetching the details now — results update automatically."
         : "Checked Microsoft 365 just now. You're all caught up.";
+      if (result.queued) chaseResults();
     }
     const [meetings, clickup] = await Promise.all([api("/api/meetings"), api("/api/clickup")]);
     const clickupSignature = JSON.stringify(clickup);
