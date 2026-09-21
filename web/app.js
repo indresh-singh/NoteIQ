@@ -41,22 +41,27 @@ function signedOut() {
 async function api(path, body, timeoutMs = 20000) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const requestId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   try {
   const response = await fetch(path, {
     signal: controller.signal,
     method: body === undefined ? "GET" : "POST",
-    headers: {"Content-Type": "application/json", ...(token ? {Authorization: `Bearer ${token}`} : {})},
+    headers: {"Content-Type": "application/json", "X-Request-ID": requestId, ...(token ? {Authorization: `Bearer ${token}`} : {})},
     ...(body === undefined ? {} : {body: JSON.stringify(body)})
   });
   if (!response.ok) {
     if (response.status === 401) signedOut();
     let detail;
     try { detail = (await response.json()).detail; } catch {}
-    throw new Error(typeof detail === "string" ? detail : "NoteIQ couldn't complete this request. Please try again.");
+    const error = new Error(typeof detail === "string" ? detail : "NoteIQ couldn't complete this request. Please try again.");
+    error.requestId = response.headers.get("X-Request-ID") || requestId;
+    error.status = response.status;
+    throw error;
   }
   return response.json();
   } catch (error) {
     if (error.name === "AbortError") throw new Error("The request timed out. Please try Refresh again.");
+    console.error("NoteIQ API request failed", {path, requestId: error.requestId || requestId, status: error.status, error});
     throw error;
   } finally { clearTimeout(timeout); }
 }

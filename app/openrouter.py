@@ -14,12 +14,14 @@ only on prompt instructions plus a permissive parser below.
 import json
 import logging
 import re
+import time
 
 import httpx
 from pydantic import ValidationError
 
 from app.config import Settings
 from app.models import Insight
+from app.observability import response_diagnostics
 from app.prompts.meeting_summary import SYSTEM_PROMPT, user_prompt
 
 log = logging.getLogger(__name__)
@@ -105,6 +107,13 @@ class OpenRouter:
             # streaming is opt-in on OpenRouter anyway; being explicit here
             # avoids any provider-side default that might stream regardless.
             payload["stream"] = False
+        started = time.monotonic()
+        log.info(
+            "OpenRouter summary started model=%s transcript_chars=%s subject_chars=%s",
+            model,
+            len(text),
+            len(subject),
+        )
         response = await self.request(**payload)
         try:
             message = response["choices"][0]["message"]
@@ -116,10 +125,35 @@ class OpenRouter:
             )
             data = extract_json_object(content)
         except (KeyError, IndexError, TypeError, ValueError) as error:
+            log.exception(
+                "OpenRouter response parsing failed model=%s duration_ms=%d "
+                "choice_count=%s response_keys=%s error_type=%s error=%s",
+                model,
+                (time.monotonic() - started) * 1000,
+                len(response.get("choices") or []),
+                sorted(response.keys()),
+                type(error).__name__,
+                error,
+            )
             raise ValueError("OpenRouter did not return a usable summary.") from error
         try:
-            return Insight.model_validate({**data, "id": f"openrouter:{key}"})
+            insight = Insight.model_validate({**data, "id": f"openrouter:{key}"})
+            log.info(
+                "OpenRouter summary completed model=%s duration_ms=%d notes=%s actions=%s",
+                model,
+                (time.monotonic() - started) * 1000,
+                len(insight.meetingNotes),
+                len(insight.actionItems),
+            )
+            return insight
         except ValidationError as error:
+            log.warning(
+                "OpenRouter summary validation failed model=%s duration_ms=%d errors=%s",
+                model,
+                (time.monotonic() - started) * 1000,
+                error.errors(include_input=False),
+                exc_info=True,
+            )
             raise ValueError("OpenRouter returned an unexpected summary shape.") from error
 
     async def request(self, **payload) -> dict:
@@ -128,16 +162,40 @@ class OpenRouter:
             "HTTP-Referer": self.config.public_url,
             "X-Title": "NoteIQ",
         }
+        started = time.monotonic()
+        model = payload.get("model", "unknown")
         try:
             async with httpx.AsyncClient(timeout=60) as client:
                 response = await client.post(API, headers=headers, json=payload)
+            log.info(
+                "OpenRouter request completed model=%s status=%s duration_ms=%d "
+                "response_bytes=%s request_id=%s",
+                model,
+                response.status_code,
+                (time.monotonic() - started) * 1000,
+                len(response.content),
+                response.headers.get("x-request-id", "-"),
+            )
             response.raise_for_status()
             return response.json()
         except httpx.HTTPStatusError as error:
+            log.warning(
+                "OpenRouter request rejected model=%s diagnostic=%s",
+                model,
+                response_diagnostics(error.response),
+                exc_info=True,
+            )
             if error.response.status_code in {401, 403}:
                 raise OpenRouterAuthError("OpenRouter rejected this API key.") from None
             if error.response.status_code == 429:
                 raise ValueError("OpenRouter is rate-limited for this model right now.") from None
             raise ValueError("OpenRouter could not complete this request.") from None
-        except httpx.HTTPError:
+        except httpx.HTTPError as error:
+            log.exception(
+                "OpenRouter transport failure model=%s duration_ms=%d error_type=%s error=%s",
+                model,
+                (time.monotonic() - started) * 1000,
+                type(error).__name__,
+                error,
+            )
             raise ValueError("Unable to reach OpenRouter.") from None

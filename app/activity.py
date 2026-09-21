@@ -53,10 +53,18 @@ async def send_next_notification(store, graph):
                 },
             )
             status = "sent"
-        except Exception:
+        except Exception as error:
             status = "failed" if job["attempts"] >= 4 else "pending"
-            log.warning(
-                "Activity notification id=%s attempt=%s failed", job["id"], job["attempts"] + 1
+            log.exception(
+                "Activity notification failed id=%s user=%s event_type=%s attempt=%s "
+                "next_status=%s error_type=%s error=%s",
+                job["id"],
+                job["user_id"],
+                activity_type,
+                job["attempts"] + 1,
+                status,
+                type(error).__name__,
+                error,
             )
     with store.connect() as db:
         db.execute(

@@ -356,6 +356,11 @@ class Store:
                 open=True,
             )
             self._create_postgres_schema()
+            log.info(
+                "Storage initialized backend=postgresql pool_min=%s pool_max=%s backup_enabled=false",
+                1,
+                5,
+            )
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         self._restore_if_needed()
@@ -428,6 +433,11 @@ class Store:
         # Some managed volume drivers set permissions at mount time and do not implement chmod.
         with suppress(OSError):
             path.chmod(0o600)
+        log.info(
+            "Storage initialized backend=sqlite path=%s backup_enabled=%s",
+            path,
+            self.backup_path is not None,
+        )
 
     def _create_postgres_schema(self):
         statements = (
@@ -534,6 +544,7 @@ class Store:
     def close(self):
         if self.database_url:
             self.pool.close()
+        log.info("Storage closed backend=%s", "postgresql" if self.database_url else "sqlite")
 
     def _restore_if_needed(self):
         """Start a new container from the last consistent mounted snapshot."""
@@ -542,13 +553,18 @@ class Store:
         temporary = self.path.with_name(self.path.name + ".restore")
         try:
             shutil.copyfile(self.backup_path, temporary)
-            with sqlite3.connect(temporary) as db:
+            # A connection context manager commits/rolls back but does not
+            # close the handle, which makes replace/unlink fail on Windows.
+            db = sqlite3.connect(temporary)
+            try:
                 if db.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                     raise RuntimeError("database integrity check failed")
                 if not db.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'"
                 ).fetchone():
                     raise RuntimeError("database snapshot has no NoteIQ schema")
+            finally:
+                db.close()
             os.replace(temporary, self.path)
             log.info("Restored NoteIQ database snapshot")
         except Exception as error:
@@ -564,8 +580,13 @@ class Store:
             with tempfile.NamedTemporaryFile(dir=self.path.parent, delete=False) as file:
                 temporary = Path(file.name)
             try:
-                with sqlite3.connect(temporary) as copy:
+                # sqlite3.Connection.__exit__ commits but does not close. That
+                # unnoticed distinction prevents unlinking this file on Windows.
+                copy = sqlite3.connect(temporary)
+                try:
                     db.backup(copy)
+                finally:
+                    copy.close()
                 staged = self.backup_path.with_name(self.backup_path.name + ".next")
                 shutil.copyfile(temporary, staged)
                 os.replace(staged, self.backup_path)
@@ -785,6 +806,24 @@ class Store:
             )
 
     def enqueue(self, payloads: list[str]):
+        if not payloads:
+            return
+        types = {}
+        for payload in payloads:
+            try:
+                fields = json.loads(payload)
+                kind = (
+                    "InsightEvent"
+                    if "insight_id" in fields
+                    else "TranscriptEvent"
+                    if "transcript_id" in fields
+                    else "UserSync"
+                    if fields.get("type") == "user_sync"
+                    else "MeetingSync"
+                )
+            except (TypeError, ValueError):
+                kind = "invalid"
+            types[kind] = types.get(kind, 0) + 1
         with self.connect() as db:
             if self.database_url:
                 db.executemany(
@@ -801,6 +840,7 @@ class Store:
                         for payload in payloads
                     ],
                 )
+        log.info("Jobs enqueued requested=%s types=%s", len(payloads), types)
 
     def pending_job_count(self) -> int:
         with self.connect() as db:
@@ -840,19 +880,29 @@ class Store:
     def finish_job(self, job_id: int, status: str):
         with self.connect() as db:
             db.execute("UPDATE jobs SET status=? WHERE id=?", (status, job_id))
+        log.info("Job persisted id=%s status=%s", job_id, status)
 
     def retry_job(self, job: dict):
         attempts = job["attempts"] + 1
+        delay = min(30 * 2**attempts, 900)
+        status = "failed" if attempts >= 5 else "pending"
         with self.connect() as db:
             db.execute(
                 "UPDATE jobs SET attempts=?, due=?, status=? WHERE id=?",
                 (
                     attempts,
-                    time.time() + min(30 * 2**attempts, 900),
-                    "failed" if attempts >= 5 else "pending",
+                    time.time() + delay,
+                    status,
                     job["id"],
                 ),
             )
+        log.warning(
+            "Job retry persisted id=%s attempts=%s status=%s delay_s=%s",
+            job["id"],
+            attempts,
+            status,
+            delay,
+        )
 
     def next_notification(self) -> dict | None:
         with self.connect() as db:
@@ -922,6 +972,16 @@ class Store:
                             user_id,
                         ),
                     )
+                    log.info(
+                        "Meeting updated user=%s meeting=%s row_id=%s settled=%s "
+                        "transcripts=%s insights=%s",
+                        user_id,
+                        digest(str(facts["meeting_id"]))[:8],
+                        row["id"],
+                        facts["settled"],
+                        len(bodies(merged, "transcript")),
+                        len(bodies(merged, "insight")),
+                    )
                     return
                 content = merged
             facts = meeting_facts(content)
@@ -942,6 +1002,15 @@ class Store:
                     user_id,
                 ),
             )
+        log.info(
+            "Meeting inserted user=%s meeting=%s source=%s settled=%s transcripts=%s insights=%s",
+            user_id,
+            digest(str(facts["meeting_id"] or "unknown"))[:8],
+            facts["source"] or "graph",
+            facts["settled"],
+            len(bodies(content, "transcript")),
+            len(bodies(content, "insight")),
+        )
 
     def save_transcript(self, user_id: str, meeting_id: str, transcript_id: str, text: str):
         with self.connect() as db:
@@ -952,7 +1021,17 @@ class Store:
                 RETURNING id""",
                 (meeting_id, transcript_id, text, user_id),
             ).fetchone()
-        return row[0] if row else None
+        local_id = row[0] if row else None
+        log.info(
+            "Transcript persisted user=%s meeting=%s transcript=%s local_id=%s chars=%s enrolled=%s",
+            user_id,
+            digest(meeting_id)[:8],
+            digest(transcript_id)[:8],
+            local_id if local_id is not None else "-",
+            len(text),
+            local_id is not None,
+        )
+        return local_id
 
     def transcript(self, user_id: str, transcript_id: int) -> str | None:
         with self.connect() as db:
@@ -1144,4 +1223,11 @@ class Store:
                 counts["meetings"] = db.execute(
                     "DELETE FROM meetings WHERE COALESCE(occurred_at, created)<?", (cutoff,)
                 ).rowcount
+        log.info(
+            "Storage prune completed job_days=%s failed_job_days=%s meeting_days=%s counts=%s",
+            job_days,
+            failed_job_days,
+            meeting_days,
+            counts,
+        )
         return counts

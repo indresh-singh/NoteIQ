@@ -100,9 +100,16 @@ async def renew_subscriptions(graph: GraphClient, store: Store, force: bool = Fa
                     resource,
                     error.response.status_code,
                 )
-            except Exception:
+            except Exception as error:
                 errors.append("CONNECTION_ERROR")
-                log.warning("Subscription user=%s failed", user_id)
+                log.exception(
+                    "Subscription failed user=%s resource=%s force=%s error_type=%s error=%s",
+                    user_id,
+                    resource,
+                    force,
+                    type(error).__name__,
+                    error,
+                )
         if errors:
             store.status(user_id, "ACCESS_REQUIRED" if "ACCESS_REQUIRED" in errors else errors[0])
         elif store.user(user_id)["status"] not in {"ACCESS_REQUIRED", "MISSED_EVENTS"}:

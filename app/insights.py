@@ -68,12 +68,33 @@ async def process_insight(event: InsightEvent, graph: GraphClient, store: Store)
                     store.status(user_id, "LISTENING")
     except httpx.HTTPStatusError as error:
         if retryable(error) or error.response.status_code == 404:
-            raise RuntimeError("Retry meeting follow-up") from None
+            log.warning(
+                "Insight retrieval will retry user=%s meeting=%s http_status=%s",
+                user_id,
+                digest(event.meeting_id)[:8],
+                error.response.status_code,
+            )
+            raise RuntimeError("Retry meeting follow-up") from error
         status = "FAILED_PERMANENT"
         store.status(user_id, "ACCESS_REQUIRED")
-        log.warning("Graph insight status=%s", error.response.status_code)
-    except (ValidationError, ValueError):
+        # GraphClient already recorded a sanitized upstream diagnostic. Do not
+        # attach this exception: an HTTPStatusError message can contain an
+        # upstream response body supplied by the provider.
+        log.warning(
+            "Insight retrieval permanently failed user=%s meeting=%s http_status=%s",
+            user_id,
+            digest(event.meeting_id)[:8],
+            error.response.status_code,
+        )
+    except (ValidationError, ValueError) as error:
         status = "NEEDS_REVIEW"
+        log.exception(
+            "Insight data needs review user=%s meeting=%s error_type=%s error=%s",
+            user_id,
+            digest(event.meeting_id)[:8],
+            type(error).__name__,
+            error,
+        )
     finally:
         log.info(
             "Insight user=%s meeting=%s status=%s publish_lag_s=%s latency_ms=%d",

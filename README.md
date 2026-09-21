@@ -22,6 +22,20 @@ uv run python -m scripts.serve
 
 The configuration helper asks for four values and generates the webhook secret. Local serving is useful for development; the deployed Container App supplies the public HTTPS endpoint used by Teams, Entra and Graph.
 
+## Diagnostic logging
+
+The server emits detailed UTC logs by default at `INFO`. Every browser request has an
+`X-Request-ID` (also returned in the response), and every background job has a job ID.
+External Graph, ClickUp and OpenRouter calls record the operation, status, latency,
+response size, provider request IDs, retries, and sanitized provider error details.
+Unhandled and internally recovered failures include their full exception chains and
+tracebacks.
+
+Set `NOTEIQ_LOG_LEVEL=DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` to change the
+threshold. OAuth codes, authorization headers, cookies, API keys, transcript/meeting
+content, and URL query values are never logged; sensitive upstream JSON keys are
+redacted and Microsoft resource identifiers in request URLs are hashed.
+
 ## Included
 
 - Real Microsoft work-account sign-in through a Teams-compatible popup.

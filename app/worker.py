@@ -8,6 +8,7 @@ from app.config import settings
 from app.graph_client import GraphClient
 from app.insights import process_insight
 from app.models import MeetingSync, TranscriptEvent, UserSync, parse_event
+from app.observability import log_context
 from app.store import Store
 from app.subscriptions import renew_subscriptions
 from app.sync import discover_meetings, queue_sync, sync_meeting
@@ -18,6 +19,7 @@ log = logging.getLogger(__name__)
 SWEEP_SECONDS = 60
 RENEWAL_SECONDS = 15 * 60
 PRUNE_SECONDS = 3600
+HOUSEKEEPING_SECONDS = 2
 
 
 async def execute_job(store: Store, graph: GraphClient, job: dict) -> None:
@@ -29,30 +31,53 @@ async def execute_job(store: Store, graph: GraphClient, job: dict) -> None:
     Making the store async would break that and require explicit locking.
     """
     started = time.monotonic()
-    try:
-        event = parse_event(job["payload"])
-        process = process_transcript if isinstance(event, TranscriptEvent) else process_insight
-        if isinstance(event, MeetingSync):
-            process = sync_meeting
-        elif isinstance(event, UserSync):
-            process = discover_meetings
-        status = await process(event, graph, store)
-        store.finish_job(job["id"], status)
-        log.info(
-            "Job id=%s type=%s result=%s duration_ms=%d",
-            job["id"],
-            type(event).__name__,
-            status,
-            (time.monotonic() - started) * 1000,
-        )
-    except Exception:
-        store.retry_job(job)
-        log.warning(
-            "Job id=%s attempt=%s failed duration_ms=%d",
-            job["id"],
-            job["attempts"] + 1,
-            (time.monotonic() - started) * 1000,
-        )
+    with log_context(job_id=job["id"]):
+        event = None
+        try:
+            event = parse_event(job["payload"])
+            process = process_transcript if isinstance(event, TranscriptEvent) else process_insight
+            if isinstance(event, MeetingSync):
+                process = sync_meeting
+            elif isinstance(event, UserSync):
+                process = discover_meetings
+            log.info(
+                "Job started id=%s type=%s attempt=%s due=%s payload_bytes=%s",
+                job["id"],
+                type(event).__name__,
+                job["attempts"] + 1,
+                job.get("due", "-"),
+                len(job["payload"]),
+            )
+            status = await process(event, graph, store)
+            store.finish_job(job["id"], status)
+            log.info(
+                "Job completed id=%s type=%s result=%s attempt=%s duration_ms=%d",
+                job["id"],
+                type(event).__name__,
+                status,
+                job["attempts"] + 1,
+                (time.monotonic() - started) * 1000,
+            )
+        except Exception as error:
+            try:
+                store.retry_job(job)
+            except Exception:
+                log.exception(
+                    "Job retry persistence failed id=%s original_error_type=%s original_error=%s",
+                    job.get("id"),
+                    type(error).__name__,
+                    error,
+                )
+                raise
+            log.exception(
+                "Job failed id=%s type=%s attempt=%s duration_ms=%d error_type=%s error=%s",
+                job.get("id"),
+                type(event).__name__ if event is not None else "unparseable",
+                job.get("attempts", 0) + 1,
+                (time.monotonic() - started) * 1000,
+                type(error).__name__,
+                error,
+            )
 
 
 async def run_job(store: Store, graph: GraphClient) -> bool:
@@ -102,7 +127,10 @@ async def run_worker(store: Store, graph: GraphClient, repair: asyncio.Event):
             # it is held to the idle cadence instead of spinning the database.
             sent = False
             if time.monotonic() >= next_housekeeping:
-                next_housekeeping = time.monotonic() + 1
+                # Keep this independent of job-completion frequency. Two seconds
+                # is prompt for notifications/repair while leaving room for the
+                # extra diagnostic I/O enabled in production.
+                next_housekeeping = time.monotonic() + HOUSEKEEPING_SECONDS
                 # Both signals are taken together so an in-process request, which
                 # sets each of them, cannot cause two consecutive repairs.
                 force = repair.is_set()
@@ -112,18 +140,32 @@ async def run_worker(store: Store, graph: GraphClient, repair: asyncio.Event):
                     next_renewal = time.monotonic() + RENEWAL_SECONDS
                     try:
                         await renew_subscriptions(graph, store, force=force)
-                    except Exception:
+                    except Exception as error:
                         next_renewal = time.monotonic() + 60
                         for user_id in store.users():
                             store.status(user_id, "CONNECTION_ERROR")
-                        log.warning("Subscription check failed; retrying in one minute")
+                        log.exception(
+                            "Subscription check failed retry_delay_s=60 force=%s "
+                            "user_count=%s error_type=%s error=%s",
+                            force,
+                            len(store.users()),
+                            type(error).__name__,
+                            error,
+                        )
                 if time.monotonic() >= next_prune:
                     next_prune = time.monotonic() + PRUNE_SECONDS
                     try:
                         removed = store.prune(meeting_days=retention)
-                    except Exception:
+                    except Exception as error:
                         removed = {}
-                        log.warning("Pruning finished work failed; retrying next hour")
+                        log.exception(
+                            "Pruning finished work failed retry_delay_s=%s retention_days=%s "
+                            "error_type=%s error=%s",
+                            PRUNE_SECONDS,
+                            retention,
+                            type(error).__name__,
+                            error,
+                        )
                     if any(removed.values()):
                         log.info(
                             "Pruned %s",

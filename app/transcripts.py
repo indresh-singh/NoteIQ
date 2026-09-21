@@ -172,7 +172,20 @@ async def process_transcript(event: TranscriptEvent, graph: GraphClient, store: 
         return "TRANSCRIPT_SAVED"
     except httpx.HTTPStatusError as error:
         if retryable(error) or error.response.status_code == 404:
-            raise RuntimeError("Retry transcript retrieval") from None
+            log.warning(
+                "Transcript retrieval will retry user=%s meeting=%s http_status=%s",
+                user_id,
+                digest(event.meeting_id)[:8],
+                error.response.status_code,
+            )
+            raise RuntimeError("Retry transcript retrieval") from error
         store.status(user_id, "ACCESS_REQUIRED")
-        log.warning("Graph transcript status=%s", error.response.status_code)
+        # GraphClient logged the sanitized response; HTTPStatusError text is
+        # not repeated here because providers may put sensitive body data in it.
+        log.warning(
+            "Transcript retrieval permanently failed user=%s meeting=%s http_status=%s",
+            user_id,
+            digest(event.meeting_id)[:8],
+            error.response.status_code,
+        )
         return "FAILED_PERMANENT"

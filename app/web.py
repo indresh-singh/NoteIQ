@@ -6,13 +6,16 @@ import hmac
 import html
 import logging
 import secrets
+import time
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from typing import Literal
 from urllib.parse import urlencode
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -24,6 +27,7 @@ from app.config import ROOT, Settings, settings
 from app.graph_client import GraphClient
 from app.models import InsightEvent, TranscriptEvent, UserSync, parse_event
 from app.notifications import validate_notifications
+from app.observability import log_context, safe_correlation_id
 from app.openrouter import MAX_TRANSCRIPT_CHARS, OpenRouter
 from app.store import Store, digest
 from app.subscriptions import resource_owner
@@ -130,48 +134,163 @@ def create_app(
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.config = config or settings()
-        app.state.store = Store(
-            app.state.config.database,
-            app.state.config.backup_database,
-            app.state.config.database_url,
-        )
-        app.state.graph = graph or GraphClient()
-        app.state.clickup = ClickUp(app.state.config) if app.state.config.clickup_enabled else None
-        app.state.repair = asyncio.Event()
-        task = (
-            asyncio.create_task(run_worker(app.state.store, app.state.graph, app.state.repair))
-            if background and app.state.config.runs_worker
-            else None
-        )
-        yield
-        if task:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-        await app.state.graph.aclose()
-        app.state.store.close()
+        startup_started = time.monotonic()
+        task = None
+        try:
+            app.state.config = config or settings()
+            app.state.store = Store(
+                app.state.config.database,
+                app.state.config.backup_database,
+                app.state.config.database_url,
+            )
+            app.state.graph = graph or GraphClient()
+            app.state.clickup = (
+                ClickUp(app.state.config) if app.state.config.clickup_enabled else None
+            )
+            app.state.repair = asyncio.Event()
+            task = (
+                asyncio.create_task(
+                    run_worker(app.state.store, app.state.graph, app.state.repair),
+                    name="noteiq-worker",
+                )
+                if background and app.state.config.runs_worker
+                else None
+            )
+            log.info(
+                "Application startup complete role=%s background_requested=%s worker_started=%s "
+                "storage=%s clickup_enabled=%s openrouter_enabled=%s duration_ms=%d",
+                app.state.config.role,
+                background,
+                task is not None,
+                "postgresql" if app.state.config.database_url else "sqlite",
+                app.state.config.clickup_enabled,
+                app.state.config.openrouter_enabled,
+                (time.monotonic() - startup_started) * 1000,
+            )
+            yield
+        except Exception as error:
+            log.exception(
+                "Application lifespan failed phase=%s duration_ms=%d error_type=%s error=%s",
+                "startup" if not hasattr(app.state, "store") else "running",
+                (time.monotonic() - startup_started) * 1000,
+                type(error).__name__,
+                error,
+            )
+            raise
+        finally:
+            shutdown_started = time.monotonic()
+            if task:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+            if hasattr(app.state, "graph"):
+                await app.state.graph.aclose()
+            if hasattr(app.state, "store"):
+                app.state.store.close()
+            log.info(
+                "Application shutdown complete duration_ms=%d",
+                (time.monotonic() - shutdown_started) * 1000,
+            )
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
-        if request.url.path.startswith("/api/") and request.method in ("POST", "DELETE"):
-            origin = request.headers.get("origin")
-            if origin and origin != request.app.state.config.public_url:
-                return PlainTextResponse("Invalid origin", status_code=403)
-        response = await call_next(request)
-        response.headers["Cache-Control"] = "no-store"
-        response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        # Tabs are embedded by Teams; do not set X-Frame-Options: DENY/SAMEORIGIN.
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; "
-            "frame-ancestors https://teams.microsoft.com https://*.teams.microsoft.com "
-            "https://*.cloud.microsoft https://*.office.com https://*.microsoft365.com"
+        started = time.monotonic()
+        request_id = safe_correlation_id(request.headers.get("x-request-id"), str(uuid4()))
+        query_keys = sorted(set(request.query_params.keys()))
+        client_host = request.client.host if request.client else "unknown"
+        with log_context(request_id=request_id):
+            log.info(
+                "HTTP request started method=%s path=%s query_keys=%s client=%s "
+                "content_type=%s content_length=%s user_agent=%r",
+                request.method,
+                request.url.path,
+                ",".join(query_keys) or "-",
+                client_host,
+                request.headers.get("content-type", "-"),
+                request.headers.get("content-length", "-"),
+                request.headers.get("user-agent", "-")[:300],
+            )
+            try:
+                if request.url.path.startswith("/api/") and request.method in ("POST", "DELETE"):
+                    origin = request.headers.get("origin")
+                    if origin and origin != request.app.state.config.public_url:
+                        log.warning(
+                            "HTTP request rejected reason=invalid_origin method=%s path=%s "
+                            "origin=%r expected_origin=%r",
+                            request.method,
+                            request.url.path,
+                            origin,
+                            request.app.state.config.public_url,
+                        )
+                        response = PlainTextResponse("Invalid origin", status_code=403)
+                    else:
+                        response = await call_next(request)
+                else:
+                    response = await call_next(request)
+            except Exception as error:
+                log.exception(
+                    "HTTP request crashed method=%s path=%s duration_ms=%d error_type=%s error=%s",
+                    request.method,
+                    request.url.path,
+                    (time.monotonic() - started) * 1000,
+                    type(error).__name__,
+                    error,
+                )
+                raise
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Referrer-Policy"] = "no-referrer"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["X-Request-ID"] = request_id
+            # Tabs are embedded by Teams; do not set X-Frame-Options: DENY/SAMEORIGIN.
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+                "img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; "
+                "frame-ancestors https://teams.microsoft.com https://*.teams.microsoft.com "
+                "https://*.cloud.microsoft https://*.office.com https://*.microsoft365.com"
+            )
+            route = request.scope.get("route")
+            log_method = log.warning if response.status_code >= 400 else log.info
+            log_method(
+                "HTTP request completed method=%s path=%s route=%s status=%s duration_ms=%d "
+                "response_content_type=%s response_content_length=%s",
+                request.method,
+                request.url.path,
+                getattr(route, "path", "unmatched"),
+                response.status_code,
+                (time.monotonic() - started) * 1000,
+                response.headers.get("content-type", "-"),
+                response.headers.get("content-length", "-"),
+            )
+            return response
+
+    @app.exception_handler(HTTPException)
+    async def log_http_exception(request: Request, error: HTTPException):
+        log.warning(
+            "HTTP handled error method=%s path=%s status=%s detail=%r headers=%s",
+            request.method,
+            request.url.path,
+            error.status_code,
+            error.detail,
+            sorted((error.headers or {}).keys()),
         )
-        return response
+        return await http_exception_handler(request, error)
+
+    @app.exception_handler(RequestValidationError)
+    async def log_validation_exception(request: Request, error: RequestValidationError):
+        diagnostics = [
+            {"location": list(item["loc"]), "type": item["type"], "message": item["msg"]}
+            for item in error.errors()
+        ]
+        log.warning(
+            "HTTP validation failed method=%s path=%s error_count=%s errors=%s",
+            request.method,
+            request.url.path,
+            len(diagnostics),
+            diagnostics,
+        )
+        return await request_validation_exception_handler(request, error)
 
     @app.get("/", response_class=HTMLResponse)
     async def home():
@@ -195,7 +314,13 @@ def create_app(
                     prompt="select_account",
                 )
             )
-        except Exception:
+        except Exception as error:
+            log.exception(
+                "Microsoft sign-in initialization failed redirect_uri=%s error_type=%s error=%s",
+                config.redirect_uri,
+                type(error).__name__,
+                error,
+            )
             raise HTTPException(
                 503, "Unable to reach Microsoft sign-in. Check the server connection."
             ) from None
@@ -238,6 +363,15 @@ def create_app(
             if UUID(claims["tid"]) != request.app.state.config.tenant_id:
                 raise ValueError("Wrong tenant")
         except Exception as error:
+            log.exception(
+                "Microsoft sign-in callback failed in_teams=%s has_state=%s query_keys=%s "
+                "error_type=%s error=%s",
+                item["in_teams"],
+                bool(request.query_params.get("state")),
+                sorted(request.query_params.keys()),
+                type(error).__name__,
+                error,
+            )
             # DEV ONLY: surfaces the real MSAL/Graph error for pilot testing.
             # Replace with a generic message before wider release.
             return auth_result(
@@ -313,6 +447,13 @@ def create_app(
             token = client.decrypt(connection["token"])
             lists = await client.available_lists(token, connection["workspaces"])
         except ValueError as error:
+            log.warning(
+                "ClickUp list discovery failed user=%s workspace_count=%s error=%s",
+                user["id"],
+                len(connection.get("workspaces") or []),
+                error,
+                exc_info=True,
+            )
             raise HTTPException(502, str(error)) from None
         return {"lists": lists}
 
@@ -360,6 +501,12 @@ def create_app(
             workspaces = await client.workspaces(token)
             request.app.state.store.save_clickup(item["user_id"], client.encrypt(token), workspaces)
         except ValueError as error:
+            log.warning(
+                "ClickUp OAuth callback failed user=%s error=%s",
+                item["user_id"],
+                error,
+                exc_info=True,
+            )
             return clickup_result(str(error), in_teams)
         return clickup_result(in_teams=in_teams)
 
@@ -375,10 +522,23 @@ def create_app(
         try:
             token = client.decrypt(connection["token"])
         except ValueError as error:
+            log.warning(
+                "ClickUp token decryption failed user=%s error=%s",
+                user["id"],
+                error,
+                exc_info=True,
+            )
             raise HTTPException(409, str(error)) from None
         try:
             name = await client.list_name(token, body.list_id)
-        except ValueError:
+        except ValueError as error:
+            log.warning(
+                "ClickUp list lookup failed user=%s list_id=%s error=%s",
+                user["id"],
+                body.list_id,
+                error,
+                exc_info=True,
+            )
             raise HTTPException(
                 400, "That ClickUp List couldn't be found. Check the List ID."
             ) from None
@@ -435,9 +595,9 @@ def create_app(
             raise HTTPException(400, "Unknown ClickUp List. Add it in Account settings first.")
         if not meeting:
             raise HTTPException(404, "Meeting not found.")
+        created = skipped = 0
         try:
             token = client.decrypt(connection["token"])
-            created = skipped = 0
             for action in actions(meeting["content"], body.provider):
                 raw = "|".join(
                     (
@@ -474,12 +634,33 @@ def create_app(
                         name,
                         f"{detail}\n\n**Owner:** {owner}\n\n_Source: NoteIQ — {meeting['subject']}_",
                     )
-                except Exception:
+                except Exception as error:
                     store.release_clickup_task(user["id"], action_key)
+                    log.exception(
+                        "ClickUp task creation failed user=%s meeting_row=%s list_id=%s "
+                        "action_key=%s error_type=%s error=%s",
+                        user["id"],
+                        meeting_id,
+                        list_id,
+                        action_key[:12],
+                        type(error).__name__,
+                        error,
+                    )
                     raise
                 store.save_clickup_task(user["id"], action_key, task)
                 created += 1
         except ValueError as error:
+            log.warning(
+                "ClickUp export failed user=%s meeting_row=%s list_id=%s created=%s "
+                "skipped=%s error=%s",
+                user["id"],
+                meeting_id,
+                list_id,
+                created,
+                skipped,
+                error,
+                exc_info=True,
+            )
             raise HTTPException(502, str(error)) from None
         return {"created": created, "skipped": skipped}
 
@@ -514,6 +695,16 @@ def create_app(
                 meeting_key, body.subject.strip(), body.text
             )
         except ValueError as error:
+            log.warning(
+                "Transcript upload analysis failed user=%s filename_extension=%s "
+                "transcript_chars=%s subject_chars=%s error=%s",
+                user["id"],
+                body.filename.rsplit(".", 1)[-1].lower(),
+                len(body.text),
+                len(body.subject.strip()),
+                error,
+                exc_info=True,
+            )
             raise HTTPException(502, str(error)) from None
         card = build_card(insight, body.subject.strip(), source="OpenRouter")
         if card is None:
@@ -593,6 +784,13 @@ def create_app(
                 request.app.state.store, request.app.state.graph, user["id"], body.meeting_url
             )
         except ValueError as error:
+            log.warning(
+                "Meeting recovery input rejected user=%s url_chars=%s error=%s",
+                user["id"],
+                len(body.meeting_url),
+                error,
+                exc_info=True,
+            )
             raise HTTPException(400, str(error)) from None
         if not result["found"]:
             raise HTTPException(404, "Meeting not found for your organizer account.")
@@ -628,9 +826,25 @@ def create_app(
         try:
             payload = await request.json()
             messages = validate_notifications(payload, request.app.state.config, lifecycle)
-        except PermissionError:
+        except PermissionError as error:
+            log.warning(
+                "Graph webhook authorization rejected lifecycle=%s content_length=%s error=%s",
+                lifecycle,
+                request.headers.get("content-length", "-"),
+                error,
+                exc_info=True,
+            )
             raise HTTPException(403, "Invalid notification") from None
-        except (ValueError, TypeError):
+        except (ValueError, TypeError) as error:
+            log.warning(
+                "Graph webhook payload rejected lifecycle=%s content_length=%s "
+                "error_type=%s error=%s",
+                lifecycle,
+                request.headers.get("content-length", "-"),
+                type(error).__name__,
+                error,
+                exc_info=True,
+            )
             raise HTTPException(400, "Invalid notification") from None
         if lifecycle:
             if messages:

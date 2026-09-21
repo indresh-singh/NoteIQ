@@ -131,8 +131,13 @@ async def sync_now(store, graph, user_id: str) -> int:
     before = store.pending_job_count()
     try:
         await discover_meetings(UserSync(user_id=user_id), graph, store)
-    except Exception:
-        log.warning("Immediate sync user=%s discovery failed", user_id)
+    except Exception as error:
+        log.exception(
+            "Immediate sync discovery failed user=%s error_type=%s error=%s",
+            user_id,
+            type(error).__name__,
+            error,
+        )
     # Deliberately exhaustive, unlike the background sweep: a person clicking
     # Refresh is asking for every recent meeting to be re-checked, including
     # settled ones and ones past the publication window. Only the reading of it
@@ -146,8 +151,14 @@ async def sync_now(store, graph, user_id: str) -> int:
     ):
         try:
             await sync_meeting(MeetingSync(user_id=user_id, meeting_id=meeting_id), graph, store)
-        except Exception:
-            log.warning("Immediate sync user=%s meeting=%s failed", user_id, meeting_id)
+        except Exception as error:
+            log.exception(
+                "Immediate meeting sync failed user=%s meeting=%s error_type=%s error=%s",
+                user_id,
+                digest(meeting_id)[:8],
+                type(error).__name__,
+                error,
+            )
     return store.pending_job_count() - before
 
 
@@ -218,9 +229,17 @@ async def sync_meeting(event, graph, store):
                     kind,
                     len(fresh),
                 )
-        except Exception:
+        except Exception as error:
             failed = True
-            log.warning("Meeting sync user=%s meeting=%s kind=%s failed", user_id, tag, kind)
+            log.exception(
+                "Meeting sync failed user=%s meeting=%s kind=%s resource=%s error_type=%s error=%s",
+                user_id,
+                tag,
+                kind,
+                resource,
+                type(error).__name__,
+                error,
+            )
     if failed:
         raise RuntimeError("Retry meeting sync")
     return "SYNCED"

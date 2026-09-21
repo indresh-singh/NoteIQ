@@ -1,11 +1,16 @@
 """Small ClickUp OAuth and task client. Tokens never leave the server."""
 
+import logging
+import time
+
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
 
 from app.config import Settings
+from app.observability import response_diagnostics, safe_url
 
 API = "https://api.clickup.com/api/v2"
+log = logging.getLogger(__name__)
 
 
 class ClickUp:
@@ -63,7 +68,14 @@ class ClickUp:
         for workspace in workspaces:
             try:
                 spaces = await self.request("GET", f"/team/{workspace['id']}/space", token=token)
-            except ValueError:
+            except ValueError as error:
+                log.warning(
+                    "ClickUp workspace skipped during list discovery workspace_id=%s "
+                    "workspace_name=%r error=%s",
+                    workspace.get("id"),
+                    workspace.get("name"),
+                    error,
+                )
                 continue
             for space in spaces.get("spaces") or []:
                 path = f"{workspace['name']} / {space.get('name', 'Space')}"
@@ -84,7 +96,15 @@ class ClickUp:
                         token=token,
                         params={"archived": "false"},
                     )
-                except ValueError:
+                except ValueError as error:
+                    log.warning(
+                        "ClickUp space skipped during list discovery workspace_id=%s "
+                        "space_id=%s space_name=%r error=%s",
+                        workspace.get("id"),
+                        space.get("id"),
+                        space.get("name"),
+                        error,
+                    )
                     continue
                 for folder in folders.get("folders") or []:
                     folder_path = f"{path} / {folder.get('name', 'Folder')}"
@@ -114,22 +134,44 @@ class ClickUp:
         failure. This treats 404 as a normal "no longer exists" result so
         callers can re-export instead of erroring out.
         """
+        started = time.monotonic()
+        url = f"{API}/task/{task_id}"
         try:
             async with httpx.AsyncClient(timeout=20) as client:
-                response = await client.get(
-                    f"{API}/task/{task_id}", headers={"Authorization": token}
-                )
+                response = await client.get(url, headers={"Authorization": token})
+            log.info(
+                "ClickUp request completed operation=task_exists method=GET url=%s status=%s "
+                "duration_ms=%d response_bytes=%s request_id=%s",
+                safe_url(url),
+                response.status_code,
+                (time.monotonic() - started) * 1000,
+                len(response.content),
+                response.headers.get("x-request-id", "-"),
+            )
             if response.status_code == 404:
                 return False
             response.raise_for_status()
             return True
         except httpx.HTTPStatusError as error:
+            log.warning(
+                "ClickUp request rejected operation=task_exists diagnostic=%s",
+                response_diagnostics(error.response),
+                exc_info=True,
+            )
             if error.response.status_code in {401, 403}:
                 raise ValueError(
                     "ClickUp rejected this connection. Reconnect ClickUp and try again."
                 ) from None
             raise ValueError("ClickUp could not complete this request. Try again.") from None
-        except httpx.HTTPError:
+        except httpx.HTTPError as error:
+            log.exception(
+                "ClickUp transport failure operation=task_exists url=%s duration_ms=%d "
+                "error_type=%s error=%s",
+                safe_url(url),
+                (time.monotonic() - started) * 1000,
+                type(error).__name__,
+                error,
+            )
             raise ValueError("Unable to reach ClickUp. Try again.") from None
 
     async def request(
@@ -138,16 +180,47 @@ class ClickUp:
         headers = kwargs.pop("headers", {})
         if auth:
             headers["Authorization"] = token or ""
+        started = time.monotonic()
+        url = API + path
         try:
             async with httpx.AsyncClient(timeout=20) as client:
-                response = await client.request(method, API + path, headers=headers, **kwargs)
+                response = await client.request(method, url, headers=headers, **kwargs)
+            log.info(
+                "ClickUp request completed method=%s url=%s auth=%s status=%s duration_ms=%d "
+                "response_bytes=%s request_id=%s",
+                method,
+                safe_url(url),
+                auth,
+                response.status_code,
+                (time.monotonic() - started) * 1000,
+                len(response.content),
+                response.headers.get("x-request-id", "-"),
+            )
             response.raise_for_status()
             return response.json()
         except httpx.HTTPStatusError as error:
+            log.warning(
+                "ClickUp request rejected method=%s url=%s auth=%s diagnostic=%s",
+                method,
+                safe_url(url),
+                auth,
+                response_diagnostics(error.response),
+                exc_info=True,
+            )
             if error.response.status_code in {401, 403}:
                 raise ValueError(
                     "ClickUp rejected this connection. Reconnect ClickUp and try again."
                 ) from None
             raise ValueError("ClickUp could not complete this request. Try again.") from None
-        except httpx.HTTPError:
+        except httpx.HTTPError as error:
+            log.exception(
+                "ClickUp transport failure method=%s url=%s auth=%s duration_ms=%d "
+                "error_type=%s error=%s",
+                method,
+                safe_url(url),
+                auth,
+                (time.monotonic() - started) * 1000,
+                type(error).__name__,
+                error,
+            )
             raise ValueError("Unable to reach ClickUp. Try again.") from None
