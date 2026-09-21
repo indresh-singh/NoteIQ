@@ -338,7 +338,7 @@ The handover is complete when all of the following pass:
 6. Graph transcript and insight subscriptions are created after the user connects.
 7. A transcribed Teams meeting appears in NoteIQ.
 8. Copilot insights appear when Microsoft publishes them.
-9. Transcript-ready and insights-ready Activity notifications arrive in Teams.
+9. One insights-ready Activity notification per meeting arrives in Teams.
 10. ClickUp connects and creates tasks when its optional settings are configured.
 
 For detailed setup instructions, see [setup.md](setup.md),

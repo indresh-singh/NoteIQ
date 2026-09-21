@@ -6,7 +6,6 @@ import time
 
 from app.config import settings
 
-TRANSCRIPT_READY = "Your transcript is ready. We'll notify you when Copilot's summary and action items are available."
 INSIGHTS_READY = "Your meeting summary and action items are ready. Open NoteIQ to review them."
 log = logging.getLogger(__name__)
 
@@ -26,15 +25,15 @@ async def send_next_notification(store, graph):
         return False
     user = store.user(job["user_id"])
     status = "cancelled"
-    if user and user["enabled"]:
+    # Only insights are worth an interruption: a meeting gets one notification,
+    # when its summary and action items land. Transcript-ready notifications
+    # were retired, so drop any an older build left queued.
+    if user and user["enabled"] and job["event_key"].startswith("insight:"):
         config = settings()
         app_id = config.teams_app_id or config.graph_client_id
         # Stable chain IDs update the same activity if a send succeeds before a retry/crash.
         chain_id = int(
             hashlib.sha256(f"{job['user_id']}:{job['event_key']}".encode()).hexdigest()[:13], 16
-        )
-        activity_type = (
-            "transcriptReady" if job["event_key"].startswith("transcript:") else "insightsReady"
         )
         try:
             await graph.request(
@@ -47,7 +46,7 @@ async def send_next_notification(store, graph):
                         "value": job["subject"][:200],
                         "webUrl": f"https://teams.microsoft.com/l/entity/{app_id}/meetings",
                     },
-                    "activityType": activity_type,
+                    "activityType": "insightsReady",
                     "chainId": chain_id,
                     "previewText": {"content": job["message"][:150]},
                 },
@@ -56,11 +55,10 @@ async def send_next_notification(store, graph):
         except Exception as error:
             status = "failed" if job["attempts"] >= 4 else "pending"
             log.exception(
-                "Activity notification failed id=%s user=%s event_type=%s attempt=%s "
+                "Activity notification failed id=%s user=%s attempt=%s "
                 "next_status=%s error_type=%s error=%s",
                 job["id"],
                 job["user_id"],
-                activity_type,
                 job["attempts"] + 1,
                 status,
                 type(error).__name__,

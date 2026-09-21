@@ -33,8 +33,8 @@ def test_postgres_store_round_trip():
     assert job["payload"] == '{"type":"test"}'
     store.finish_job(job["id"], "done")
 
-    queue_notification(store, user_id, "transcript:meeting", "First", "Ready")
-    assert store.next_notification()["event_key"] == "transcript:meeting"
+    queue_notification(store, user_id, "insight:meeting", "First", "Ready")
+    assert store.next_notification()["event_key"] == "insight:meeting"
     store.disconnect(user_id)
 
 

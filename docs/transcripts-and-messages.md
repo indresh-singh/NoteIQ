@@ -45,13 +45,17 @@ server's `TEAMS_APP_ID` so notifications open the correct installed app.
 
 ## Notifications and meeting organization
 
-There are two separate notifications:
+A meeting produces exactly one notification:
 
-- **Transcript available:** “Your transcript is ready. We'll notify you when Copilot's
-  summary and action items are available.” This is queued after transcript content is saved.
 - **Insights available:** “Your meeting summary and action items are ready. Open NoteIQ
-  to review them.” This is queued only after real Copilot notes/actions have been retrieved
-  and saved. A transcript event does not trigger a fake insights-ready notification.
+  to review them.” This is queued only after real notes/actions have been retrieved and
+  saved, whether Copilot or OpenRouter produced them. Saving a transcript notifies nobody,
+  and a transcript event never triggers a fake insights-ready notification.
+
+The outbox key is the meeting, not the artifact, so later insight segments for the same
+meeting — the second provider, a regenerated summary, a resumed transcription — update the
+stored results silently instead of notifying again. Transcript-ready notifications were
+retired; any left queued by an earlier build are cancelled unsent.
 
 The app name/icon represents NoteIQ in the Activity feed. Notification previews contain
 readiness text and the meeting topic, not raw transcript or insight bodies. Banner, sound
@@ -75,7 +79,7 @@ queueing the corresponding Activity notification. The same worker delivers the o
 POST /v1.0/users/{organizerId}/teamwork/sendActivityNotification
 ```
 
-The manifest declares matching `transcriptReady` and `insightsReady` activity types.
+The manifest declares the matching `insightsReady` activity type.
 Text topics deep-link to the personal Meetings tab. A stable `chainId` is derived from the
 user/event key so retries update the same activity instead of creating a new feed entry.
 Transcript and insight chain IDs differ. The outbox retries up to five attempts; failed
