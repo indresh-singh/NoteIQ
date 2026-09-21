@@ -12,6 +12,7 @@ reported rather than overwritten.
 
 import argparse
 import json
+from datetime import datetime, timezone
 
 from app.config import settings
 from app.store import Store, dedupe_content
@@ -38,6 +39,21 @@ def plan(store: Store) -> list[dict]:
                 }
             )
     return work
+
+
+def snapshot(store: Store) -> str:
+    """Copy the meetings table before writing, and return the copy's name.
+
+    Point-in-time restore rebuilds the whole server, which is a heavy way to undo
+    one bad UPDATE. A table beside the original makes the rollback a single
+    statement, and needs no access this script does not already have.
+    """
+    # Sub-second resolution: two runs in the same second must not collide on a
+    # name, or the second one fails instead of taking its own backup.
+    name = "meetings_backup_" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    with store.connect() as db:
+        db.execute(f"CREATE TABLE {name} AS SELECT * FROM meetings")
+    return name
 
 
 def apply(store: Store, work: list[dict]) -> tuple[int, list[int]]:
@@ -78,8 +94,11 @@ def main() -> int:
         print(f"\n{len(work)} row(s) would change. Re-run with --apply to write.")
         return 0
 
+    table = snapshot(store)
+    print(f"\nBacked up meetings to {table}")
     written, skipped = apply(store, work)
-    print(f"\nUpdated {written} row(s).")
+    print(f"Updated {written} row(s).")
+    print(f"To undo: UPDATE meetings m SET content=b.content FROM {table} b WHERE m.id=b.id;")
     if skipped:
         print(f"Skipped {len(skipped)} row(s) changed by the worker mid-run: {skipped}")
         print("Re-run to pick them up.")

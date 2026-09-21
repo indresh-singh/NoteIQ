@@ -3,7 +3,7 @@
 import json
 
 from app.store import artifact_aliases, dedupe_content
-from scripts.dedupe_meetings import apply, plan
+from scripts.dedupe_meetings import apply, plan, snapshot
 from tests.conftest import USER
 
 
@@ -220,3 +220,20 @@ class TestCleanupScript:
     def test_clean_database_reports_no_work(self, store):
         store.save_meeting(USER, "Standup", {"meeting_id": "m", "transcript": {"id": "A"}})
         assert plan(store) == []
+
+    def test_the_snapshot_holds_the_rows_as_they_were_before_the_write(self, store):
+        """The undo path: a copy beside the original, not a server restore."""
+        self.duplicated(store)
+        work = plan(store)
+        table = snapshot(store)
+        apply(store, work)
+        with store.connect() as db:
+            saved = json.loads(
+                db.execute(f"SELECT content FROM {table} WHERE user_id=?", (USER,)).fetchone()[0]
+            )
+        assert len(saved["transcripts"]) == 2
+        assert len(store.meetings(USER)[0]["content"]["transcripts"]) == 1
+
+    def test_each_snapshot_gets_its_own_table(self, store):
+        store.save_meeting(USER, "Standup", {"meeting_id": "m"})
+        assert snapshot(store) != snapshot(store)
