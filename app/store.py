@@ -410,6 +410,11 @@ class Store:
                     status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
                     due REAL NOT NULL, UNIQUE(user_id, event_key)
                 );
+                CREATE TABLE IF NOT EXISTS subscriptions (
+                    user_id TEXT NOT NULL, resource_kind TEXT NOT NULL,
+                    subscription_id TEXT NOT NULL, expires_at REAL NOT NULL,
+                    PRIMARY KEY (user_id, resource_kind)
+                );
                 CREATE TABLE IF NOT EXISTS clickup_connections (
                     user_id TEXT PRIMARY KEY, token TEXT NOT NULL, list_id TEXT, workspaces TEXT NOT NULL
                 );
@@ -486,6 +491,10 @@ class Store:
                 subject TEXT NOT NULL, message TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
                 due DOUBLE PRECISION NOT NULL, UNIQUE(user_id, event_key))""",
+            """CREATE TABLE IF NOT EXISTS subscriptions (
+                user_id TEXT NOT NULL, resource_kind TEXT NOT NULL,
+                subscription_id TEXT NOT NULL, expires_at DOUBLE PRECISION NOT NULL,
+                PRIMARY KEY (user_id, resource_kind))""",
             """CREATE TABLE IF NOT EXISTS clickup_connections (
                 user_id TEXT PRIMARY KEY, token TEXT NOT NULL, list_id TEXT, workspaces TEXT NOT NULL)""",
             "ALTER TABLE clickup_connections ADD COLUMN IF NOT EXISTS list_name TEXT",
@@ -696,9 +705,59 @@ class Store:
             db.execute("DELETE FROM meetings WHERE user_id=?", (user_id,))
             db.execute("DELETE FROM transcripts WHERE user_id=?", (user_id,))
             db.execute("DELETE FROM activity_outbox WHERE user_id=?", (user_id,))
+            db.execute("DELETE FROM subscriptions WHERE user_id=?", (user_id,))
             db.execute("DELETE FROM clickup_connections WHERE user_id=?", (user_id,))
             db.execute("DELETE FROM clickup_lists WHERE user_id=?", (user_id,))
             db.execute("DELETE FROM clickup_tasks WHERE user_id=?", (user_id,))
+
+    def reconcile_subscriptions(self, rows: list[tuple[str, str, str, float]]):
+        """Mirror Graph's own subscription list into the local table.
+
+        Called once per renewal cycle with every currently-live subscription
+        this app owns. An upsert rather than a replace, so a row this same
+        cycle's renewal writes moments later (see save_subscription) is not
+        clobbered by the listing that ran before it. Self-healing: a row lost
+        to a crash, a fresh deploy, or drift from a manual change in Graph is
+        rebuilt from the next listing rather than causing a duplicate create.
+        """
+        if not rows:
+            return
+        with self.connect() as db:
+            db.executemany(
+                """INSERT INTO subscriptions(user_id, resource_kind, subscription_id, expires_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, resource_kind) DO UPDATE SET
+                    subscription_id=excluded.subscription_id, expires_at=excluded.expires_at""",
+                rows,
+            )
+
+    def save_subscription(
+        self, user_id: str, resource_kind: str, subscription_id: str, expires_at: float
+    ):
+        """Record the result of one successful create/renew, ahead of the next reconciliation."""
+        self.reconcile_subscriptions([(user_id, resource_kind, subscription_id, expires_at)])
+
+    def due_subscriptions(self, force: bool = False, within_minutes: float = 30) -> list[dict]:
+        """Enrolled users' subscriptions worth a Graph call: missing, expiring soon, or forced.
+
+        One indexed query in place of walking every enrolled user in Python and
+        rescanning Graph's own subscription listing for each -- the O(users)
+        cost that made a 1500-user renewal cycle take minutes instead of
+        seconds. A user with no row here yet (never subscribed) is included via
+        the LEFT JOIN, the same as one whose row has simply gone stale.
+        """
+        with self.connect() as db:
+            rows = db.execute(
+                """SELECT u.id AS user_id, k.kind AS resource_kind,
+                    s.subscription_id AS subscription_id
+                FROM users u
+                CROSS JOIN (SELECT 'insights' AS kind UNION ALL SELECT 'transcripts') AS k
+                LEFT JOIN subscriptions s ON s.user_id = u.id AND s.resource_kind = k.kind
+                WHERE u.enabled = 1
+                  AND (? OR s.expires_at IS NULL OR s.expires_at <= ?)""",
+                (1 if force else 0, time.time() + within_minutes * 60),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def save_clickup(self, user_id: str, token: str, workspaces: list[dict]):
         with self.connect() as db:

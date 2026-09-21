@@ -38,6 +38,7 @@ class Settings(BaseModel):
     # tier can scale out; "all" keeps both in one process, as a single replica.
     role: Literal["all", "web", "worker"] = "all"
     job_concurrency: int = 4
+    subscription_concurrency: int = 15
     meeting_retention_days: float | None = None
 
     @property
@@ -103,6 +104,7 @@ def settings() -> Settings:
         ),
         role=os.getenv("NOTEIQ_ROLE", "all"),
         job_concurrency=os.getenv("NOTEIQ_JOB_CONCURRENCY", "4"),
+        subscription_concurrency=os.getenv("NOTEIQ_SUBSCRIPTION_CONCURRENCY", "15"),
         meeting_retention_days=os.getenv("NOTEIQ_MEETING_RETENTION_DAYS") or None,
     )
     url = urlsplit(config.public_url)
@@ -129,6 +131,8 @@ def settings() -> Settings:
         )
     if not 1 <= config.job_concurrency <= 32:
         raise ValueError("NOTEIQ_JOB_CONCURRENCY must be between 1 and 32")
+    if not 1 <= config.subscription_concurrency <= 64:
+        raise ValueError("NOTEIQ_SUBSCRIPTION_CONCURRENCY must be between 1 and 64")
     if config.meeting_retention_days is not None and config.meeting_retention_days < 7:
         # Below the seven days discovery itself looks back, retention would
         # delete meetings the next sweep immediately re-fetches.

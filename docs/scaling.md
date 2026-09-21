@@ -67,11 +67,31 @@ Three limits sit outside NoteIQ and will be reached on their own schedule:
 | Variable | Default | Effect |
 |---|---|---|
 | `NOTEIQ_JOB_CONCURRENCY` | `4` | Jobs run at once. Raising it helps when jobs are waiting on Graph or OpenRouter, which is the usual case. It does not help with database-bound work, because store calls are synchronous |
+| `NOTEIQ_SUBSCRIPTION_CONCURRENCY` | `15` | Graph subscription create/renew calls in flight at once during a renewal cycle. See below |
 | `NOTEIQ_MEETING_RETENTION_DAYS` | unset | Unset keeps saved meetings until the user disconnects, which is the documented product behaviour. Setting it deletes meetings and their transcripts past that age. Minimum 7, since discovery itself looks back 7 days |
 | `OPENAI_MIN_REQUEST_INTERVAL_SECONDS` | `30` | Minimum interval between OpenAI requests in each worker process. Leave at 30 seconds (2 RPM) initially; more worker replicas multiply the total ceiling |
 
 Finished jobs are pruned hourly without configuration: ordinary results after a
 day, failures after seven so they remain available for diagnosis.
+
+## Subscription renewal
+
+Every enrolled user needs two Graph subscriptions (transcripts, insights) kept
+alive with an hourly expiry, renewed on a 15-minute timer. At a few hundred
+users this used to mean walking every enrolled user in Python and rescanning
+Graph's own subscription listing for each one — an O(users × subscriptions)
+cost that, at 1500 users, took the renewal cycle several minutes and stalled
+the rest of the worker's housekeeping (notifications, pruning) for as long as
+it ran.
+
+A local `subscriptions` table now tracks each one's expiry. Every cycle still
+lists Graph's subscriptions once, to clean up orphans and to correct the local
+table against drift (a lost row, a fresh deploy, a manual change), but the
+decision of *what needs a Graph call this cycle* is one indexed query against
+that table instead of a walk over every user. Only the resources that come
+back from that query make a network call, bounded by
+`NOTEIQ_SUBSCRIPTION_CONCURRENCY` running at once — turning several minutes of
+sequential PATCH/POST calls into a few seconds.
 
 ## Splitting web and worker
 
