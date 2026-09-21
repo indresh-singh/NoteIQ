@@ -71,6 +71,15 @@ class PostgresCursor:
     def fetchall(self):
         return [Row(row) for row in self.cursor.fetchall()]
 
+    @property
+    def rowcount(self):
+        """How many rows the statement matched, as sqlite3 already reports.
+
+        A conditional UPDATE reads as "did my version still hold?", which is how
+        the duplicate cleanup avoids overwriting a row the worker just changed.
+        """
+        return self.cursor.rowcount
+
     def __iter__(self):
         return iter(self.fetchall())
 
@@ -101,6 +110,61 @@ class PostgresConnection:
 
 def digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def artifact_aliases(body: dict) -> set[str]:
+    """Every name one transcript or insight is known by.
+
+    Graph hands out two ids for the same transcript -- getAllTranscripts and a
+    meeting's own /transcripts list disagree -- so an artifact is a duplicate
+    when *either* name matches, not only the one we happened to store first.
+    Insights carry a content fingerprint too: an OpenRouter summary is keyed by
+    the transcript that produced it, so two aliased transcripts yield two
+    insights that share no id at all and are otherwise identical.
+    """
+    aliases = {str(body[key]) for key in ("id", "source_id") if body.get(key)}
+    notes, actions = body.get("meetingNotes"), body.get("actionItems")
+    if notes or actions:
+        # Scoped by provider: Copilot and OpenRouter summarising the same
+        # meeting alike is the comparison the product exists to show, not a
+        # duplicate, so their fingerprints must never collide.
+        provider = body.get("provider") or "copilot"
+        fingerprint = json.dumps([provider, notes, actions], sort_keys=True, default=str)
+        aliases.add("sha:" + digest(fingerprint))
+    return aliases
+
+
+def dedupe_content(content: dict) -> tuple[dict, dict]:
+    """Collapse aliased transcripts and insights. Returns (cleaned, report).
+
+    Pure: no database access, so the same logic guards every write in
+    save_meeting and backfills rows written before that guard existed.
+    """
+    cleaned, report = dict(content), {}
+    for kind, field in (("insight", "insights"), ("transcript", "transcripts")):
+        entries = content.get(field) or []
+        kept: list[dict] = []
+        index: dict[str, int] = {}
+        for entry in entries:
+            aliases = artifact_aliases(entry.get(kind) or {})
+            at = next((index[alias] for alias in aliases if alias in index), None)
+            if at is None:
+                at = len(kept)
+                kept.append(entry)
+            else:
+                # Later write wins: Copilot revises an insight in place, and the
+                # freshest copy is the one worth keeping.
+                kept[at] = entry
+            index.update(dict.fromkeys(aliases, at))
+        if len(kept) != len(entries):
+            report[field] = {"before": len(entries), "after": len(kept)}
+        if entries:
+            cleaned[field] = kept
+            # The singular mirror must name a survivor or _meeting_occurred_at
+            # reads a record that is no longer in the array.
+            if kind in cleaned:
+                cleaned[kind] = kept[-1][kind]
+    return cleaned, report
 
 
 def job_priority(payload: str) -> int:
@@ -634,9 +698,13 @@ class Store:
                         item = {kind: content[kind]}
                         if kind == "insight":
                             item["card"] = content.get("card")
-                        items = [x for x in items if x[kind]["id"] != content[kind]["id"]]
+                        # Drop any entry naming the same artifact under one of
+                        # its other ids, not just the id this write happens to use.
+                        aliases = artifact_aliases(content[kind])
+                        items = [x for x in items if not artifact_aliases(x[kind]) & aliases]
                         merged[field] = [*items, item]
                 merged.update(content)
+                merged, _ = dedupe_content(merged)
                 occurred_at = _meeting_occurred_at(merged) or occurred_at
                 if row:
                     db.execute(

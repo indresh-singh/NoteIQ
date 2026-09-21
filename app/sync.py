@@ -9,7 +9,7 @@ import httpx
 
 from app.meetings import meeting_filter
 from app.models import InsightEvent, MeetingSync, TranscriptEvent, UserSync
-from app.store import digest
+from app.store import artifact_aliases, digest
 
 log = logging.getLogger(__name__)
 
@@ -27,9 +27,17 @@ def settled(content: dict) -> bool:
         [content["transcript"]] if content.get("transcript") else []
     )
     insights = content.get("insights") or (
-        [content["insight"]] if content.get("insight") else []
+        [{"insight": content["insight"]}] if content.get("insight") else []
     )
-    return bool(transcripts) and len(insights) >= len(transcripts)
+    # Only Copilot insights count. OpenRouter summarises locally the moment a
+    # transcript lands, so counting it would mark every meeting finished before
+    # Copilot -- the thing polling is actually waiting for -- ever publishes.
+    copilot = [
+        item
+        for item in insights
+        if ((item.get("insight") or {}).get("provider") or "copilot") == "copilot"
+    ]
+    return bool(transcripts) and len(copilot) >= len(transcripts)
 
 
 def queue_sync(store, user_id, *, discover=False):
@@ -69,10 +77,14 @@ async def discover_meetings(event, graph, store):
             "Transcript discovery user=%s http_status=%s", user_id, error.response.status_code
         )
         raise
+    # Match on every id a saved transcript is known by. getAllTranscripts names
+    # transcripts differently from a meeting's own /transcripts list, so keying
+    # on one id alone re-fetches -- and re-summarises -- what we already hold.
     known = {
-        (m["content"]["meeting_id"], item["transcript"]["id"])
+        (m["content"]["meeting_id"], alias)
         for m in store.meetings(user_id)
         for item in m["content"].get("transcripts", [])
+        for alias in artifact_aliases(item["transcript"])
     }
     payloads = []
     for item in items:
