@@ -511,8 +511,8 @@ async function refresh(sync = false) {
     if (sync) {
       const result = await api("/api/sync", {});
       syncMessage = result.queued
-        ? "Checking meetings you organized in the last seven days. Results update automatically."
-        : "No meeting checks were queued. Please try again.";
+        ? "Found new activity. Fetching the details now — results update automatically."
+        : "Checked Microsoft 365 just now. You're all caught up.";
     }
     const [meetings, clickup] = await Promise.all([api("/api/meetings"), api("/api/clickup")]);
     const clickupSignature = JSON.stringify(clickup);

@@ -124,7 +124,8 @@ def test_unknown_state_and_msal_failure_are_rejected(client, monkeypatch):
     identity.acquire_token_by_auth_code_flow.side_effect = ValueError("private-nonce-error")
     response = client.get("/auth/callback", params={"state": state, "code": "code"})
     assert response.status_code == 400
-    assert "private-nonce-error" not in response.text
+    # DEV ONLY: the real MSAL error is shown for pilot testing (see app/web.py).
+    assert "private-nonce-error" in response.text
     assert client.app.state.store.users() == []
 
 

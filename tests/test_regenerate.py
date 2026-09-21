@@ -54,11 +54,23 @@ def test_regenerate_replaces_openrouter_insight(monkeypatch, client, store, sign
     assert insights[0]["insight"]["provider"] == "openrouter"
 
 
-def test_regenerate_requires_openrouter_provider(client, store, signed_in):
+def test_regenerate_requires_openrouter_to_be_configured(client, store, signed_in):
     meeting_id = seed_meeting_with_transcript(store)
     response = client.post(f"/api/meetings/{meeting_id}/regenerate", headers=signed_in, json={})
     assert response.status_code == 409
-    assert "AI_PROVIDER" in response.json()["detail"]
+    assert "OPENROUTER" in response.json()["detail"]
+
+
+def test_regenerate_works_under_the_default_copilot_provider(monkeypatch, client, store, signed_in):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setenv("OPENROUTER_MODEL", "test/model")
+    settings.cache_clear()
+    monkeypatch.setattr("app.transcripts.OpenRouter", FakeOpenRouter)
+    meeting_id = seed_meeting_with_transcript(store)
+
+    response = client.post(f"/api/meetings/{meeting_id}/regenerate", headers=signed_in, json={})
+    assert response.status_code == 200
+    assert response.json()["content"]["insights"][0]["insight"]["provider"] == "openrouter"
 
 
 def test_regenerate_requires_a_transcript(monkeypatch, client, store, signed_in):

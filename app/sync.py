@@ -7,7 +7,6 @@ from urllib.parse import quote
 
 import httpx
 
-from app.config import settings
 from app.meetings import meeting_filter
 from app.models import InsightEvent, MeetingSync, TranscriptEvent, UserSync
 
@@ -76,6 +75,33 @@ async def discover_meetings(event, graph, store):
     return "DISCOVERED"
 
 
+async def sync_now(store, graph, user_id: str) -> int:
+    """Check Graph for new transcripts/insights immediately, in this request.
+
+    Used by the manual Refresh button so a click reflects Graph's current
+    state right away, instead of only queuing a UserSync job for the
+    background worker to notice on its next pass. Any transcript/insight this
+    finds is still queued for content-fetch (process_transcript/process_insight)
+    so retries and backoff keep working the same way they do for webhook-driven
+    events; only the "is there anything new?" discovery step runs inline here.
+    """
+    before = store.pending_job_count()
+    try:
+        await discover_meetings(UserSync(user_id=user_id), graph, store)
+    except Exception:
+        log.warning("Immediate sync user=%s discovery failed", user_id)
+    cutoff = time.time() - 7 * 86400
+    for meeting in store.meetings(user_id):
+        if meeting["created"] < cutoff or meeting["content"].get("source") == "upload":
+            continue
+        meeting_id = meeting["content"]["meeting_id"]
+        try:
+            await sync_meeting(MeetingSync(user_id=user_id, meeting_id=meeting_id), graph, store)
+        except Exception:
+            log.warning("Immediate sync user=%s meeting=%s failed", user_id, meeting_id)
+    return store.pending_job_count() - before
+
+
 async def recover_from_link(store, graph, user_id, meeting_url):
     """Seed a missed meeting from its Teams join link, then fetch its artifacts."""
     meetings = await graph.list(
@@ -109,9 +135,12 @@ async def sync_meeting(event, graph, store):
         return "SKIPPED_UNKNOWN_MEETING"
     path = f"/users/{user_id}/onlineMeetings/{quote(event.meeting_id, safe='')}"
     failed = False
-    kinds = [("transcript", path + "/transcripts", TranscriptEvent, "transcript_id")]
-    if settings().ai_provider == "copilot":
-        kinds.append(("insight", "/copilot" + path + "/aiInsights", InsightEvent, "insight_id"))
+    # Copilot insight sync runs regardless of AI_PROVIDER: Copilot and OpenRouter
+    # insights are captured side by side, not as an either/or choice.
+    kinds = [
+        ("transcript", path + "/transcripts", TranscriptEvent, "transcript_id"),
+        ("insight", "/copilot" + path + "/aiInsights", InsightEvent, "insight_id"),
+    ]
     for kind, resource, model, field in kinds:
         try:
             known = {item[kind]["id"] for item in saved.get(kind + "s", [])}

@@ -37,16 +37,21 @@ async def test_transcript_failure_does_not_block_insight_recovery(store, graph):
     assert json.loads(store.next_job()["payload"])["insight_id"] == "i"
 
 
-async def test_openrouter_provider_skips_copilot_insight_sync(monkeypatch, store, graph):
+async def test_copilot_insight_sync_runs_regardless_of_ai_provider(monkeypatch, store, graph):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     monkeypatch.setenv("OPENROUTER_MODEL", "test/model")
     monkeypatch.setenv("AI_PROVIDER", "openrouter")
     settings.cache_clear()
     store.save_meeting(USER, "Meeting", {"meeting_id": "m"})
-    graph.list.return_value = [{"id": "t"}]
+    graph.list.side_effect = [[{"id": "t"}], [{"id": "i"}]]
     assert await sync_meeting(MeetingSync(user_id=USER, meeting_id="m"), graph, store) == "SYNCED"
-    assert graph.list.await_count == 1
-    assert json.loads(store.next_job()["payload"])["transcript_id"] == "t"
+    assert graph.list.await_count == 2
+    payloads = []
+    while job := store.next_job():
+        payloads.append(json.loads(job["payload"]))
+        store.finish_job(job["id"], "done")
+    assert any(item.get("transcript_id") == "t" for item in payloads)
+    assert any(item.get("insight_id") == "i" for item in payloads)
 
 
 async def test_unknown_meeting_never_queries_graph(store, graph):
@@ -57,18 +62,22 @@ async def test_unknown_meeting_never_queries_graph(store, graph):
     graph.list.assert_not_called()
 
 
-def test_refresh_requires_auth_and_queues_only_own_meetings(client, store, signed_in):
+def test_refresh_requires_auth_and_checks_graph_only_for_own_meetings(
+    client, store, signed_in, graph
+):
     other = "99999999-9999-9999-9999-999999999999"
     store.enroll(other, "Other")
     store.save_meeting(other, "Other", {"meeting_id": "private"})
     store.save_meeting(USER, "Mine", {"meeting_id": "mine"})
     assert client.post("/api/sync", json={}).status_code == 401
-    assert client.post("/api/sync", headers=signed_in, json={}).json() == {"queued": 2}
+    assert client.post("/api/sync", headers=signed_in, json={}).json() == {"queued": 0}
+    # Nothing is queued for the worker to pick up later: discovery and the
+    # per-meeting check both ran against Graph inline, within this request.
     with store.connect() as db:
-        rows = db.execute("SELECT payload FROM jobs").fetchall()
-    assert len(rows) == 2
-    assert json.loads(rows[0][0])["meeting_id"] == "mine"
-    assert isinstance(parse_event(rows[1][0]), UserSync)
+        assert db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 0
+    paths = [call.args[0] for call in graph.list.call_args_list]
+    assert any("mine" in path for path in paths)
+    assert all(other not in path for path in paths)
 
 
 async def test_recovery_uses_the_user_meeting_link(store, graph):
@@ -80,9 +89,13 @@ async def test_recovery_uses_the_user_meeting_link(store, graph):
     assert store.meetings(USER)[0]["subject"] == "Recovered"
 
 
-def test_refresh_discovers_when_no_meetings_are_saved(client, store, signed_in):
-    assert client.post("/api/sync", headers=signed_in, json={}).json() == {"queued": 1}
-    assert isinstance(parse_event(store.next_job()["payload"]), UserSync)
+def test_refresh_discovers_new_transcripts_immediately(client, store, signed_in, graph):
+    graph.list.return_value = [{"id": "t", "meetingId": "new-meeting"}]
+    response = client.post("/api/sync", headers=signed_in, json={})
+    assert response.json() == {"queued": 1}
+    job = parse_event(store.next_job()["payload"])
+    assert job.meeting_id == "new-meeting"
+    assert job.transcript_id == "t"
     assert client.app.state.repair.is_set()
 
 

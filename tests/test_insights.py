@@ -102,15 +102,14 @@ async def test_disconnected_user_is_skipped(samples, store):
     graph.request.assert_not_awaited()
 
 
-async def test_openrouter_provider_skips_copilot_insight_processing(monkeypatch, samples, store):
+async def test_copilot_insight_is_processed_regardless_of_ai_provider(monkeypatch, samples, store):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     monkeypatch.setenv("OPENROUTER_MODEL", "test/model")
     monkeypatch.setenv("AI_PROVIDER", "openrouter")
     settings.cache_clear()
     graph, store, event = clients(samples, store)
-    assert await process_insight(event, graph, store) == "SKIPPED_PROVIDER_DISABLED"
-    graph.request.assert_not_awaited()
-    assert store.meetings(str(event.user_id)) == []
+    assert await process_insight(event, graph, store) == "SAVED"
+    assert len(store.meetings(str(event.user_id))) == 1
 
 
 @pytest.mark.parametrize("code", [404, 429, 500, 503])

@@ -94,8 +94,8 @@ Set these normal Container App environment variables:
 
 | Variable | Value |
 |---|---|
-| `AZURE_TENANT_ID` | `e781494f-04eb-465e-b6c7-09cca52f5631` |
-| `GRAPH_CLIENT_ID` | `54bbd41a-9e11-4578-a658-7ec30577d393` |
+| `AZURE_TENANT_ID` | See `.env` — this is the single source of truth; do not duplicate the value in docs |
+| `GRAPH_CLIENT_ID` | See `.env` — this is the single source of truth; do not duplicate the value in docs |
 | `TEAMS_APP_ID` | Stable Teams package ID; normally the same as `GRAPH_CLIENT_ID` |
 | `PUBLIC_BASE_URL` | `https://noteiq.salmontree-16ed39aa.uaenorth.azurecontainerapps.io` |
 | `CLICKUP_CLIENT_ID` | Optional ClickUp OAuth client ID |
@@ -147,8 +147,8 @@ Use the existing single-tenant app registration:
 
 | Item | Value |
 |---|---|
-| Application/client ID | `54bbd41a-9e11-4578-a658-7ec30577d393` |
-| Tenant ID | `e781494f-04eb-465e-b6c7-09cca52f5631` |
+| Application/client ID | See `.env`'s `GRAPH_CLIENT_ID` — single source of truth |
+| Tenant ID | See `.env`'s `AZURE_TENANT_ID` — single source of truth |
 | Supported accounts | Accounts in this organizational directory only |
 
 Configure the following Web redirect URI:

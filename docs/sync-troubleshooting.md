@@ -5,14 +5,15 @@ Summary topics keep their original text and expandable subpoints.
 
 - Graph notifications queue new transcripts and insights automatically.
 - Saving a transcript or insight also queues a check for the other artifact.
-- Every five minutes, NoteIQ discovers transcripts for meetings organized by each
+- Every minute, NoteIQ discovers transcripts for meetings organized by each
   enrolled user in the last seven days using Graph `getAllTranscripts`. This
   recovers meetings that never reached NoteIQ through a webhook. It uses the
   existing `OnlineMeetingTranscript.Read.All` application permission.
 - Saved meetings updated in the last seven days are also checked for missing artifacts.
-- **Refresh** queues both checks for the signed-in user and requests subscription repair. It runs in the
-  background; the open page reloads results every 15 seconds and on returning to
-  the tab. It does not trigger Copilot generation.
+- **Refresh** runs both checks against Graph immediately, inline in the request —
+  not queued for the background worker — and requests subscription repair. Only
+  a newly discovered transcript or insight is queued for content-fetch, the same
+  way a webhook-delivered one would be.
 - For meetings older than seven days, use **Check meeting** with the meeting link
   or `scripts.recover`. Only organizer meetings are supported; Graph's discovery
   endpoint does not support channel meetings. See Microsoft's

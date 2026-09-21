@@ -512,6 +512,10 @@ class Store:
                     [(payload, time.time(), payload) for payload in payloads],
                 )
 
+    def pending_job_count(self) -> int:
+        with self.connect() as db:
+            return db.execute("SELECT COUNT(*) FROM jobs WHERE status='pending'").fetchone()[0]
+
     def next_job(self) -> dict | None:
         with self.connect() as db:
             row = db.execute(

@@ -78,9 +78,12 @@ async def renew_subscriptions(graph: GraphClient, store: Store, force: bool = Fa
                     raise
     for user_id in sorted(users):
         errors = []
-        resources = [f"users/{user_id}/onlineMeetings/getAllTranscripts"]
-        if config.ai_provider == "copilot":
-            resources.insert(0, f"copilot/users/{user_id}/onlineMeetings/getAllAiInsights")
+        # Copilot insight subscriptions run regardless of AI_PROVIDER: Copilot and
+        # OpenRouter insights are captured side by side, not as an either/or choice.
+        resources = [
+            f"copilot/users/{user_id}/onlineMeetings/getAllAiInsights",
+            f"users/{user_id}/onlineMeetings/getAllTranscripts",
+        ]
         # A missing transcript permission must not prevent insight subscription setup.
         for resource in resources:
             try:

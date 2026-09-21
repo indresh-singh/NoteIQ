@@ -30,7 +30,9 @@ async def test_create_missing_subscription(config, store):
     assert call.kwargs["json"]["lifecycleNotificationUrl"].endswith("/api/graph/lifecycle")
 
 
-async def test_openrouter_provider_skips_copilot_insight_subscription(monkeypatch, config, store):
+async def test_copilot_insight_subscription_created_regardless_of_ai_provider(
+    monkeypatch, config, store
+):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     monkeypatch.setenv("OPENROUTER_MODEL", "test/model")
     monkeypatch.setenv("AI_PROVIDER", "openrouter")
@@ -38,8 +40,10 @@ async def test_openrouter_provider_skips_copilot_insight_subscription(monkeypatc
     graph = AsyncMock()
     graph.list.return_value = []
     await renew_subscriptions(graph, store)
-    assert graph.request.await_count == 1
-    assert graph.request.call_args.kwargs["json"]["resource"].endswith("/getAllTranscripts")
+    assert graph.request.await_count == 2
+    resources = {call.kwargs["json"]["resource"] for call in graph.request.call_args_list}
+    assert any(resource.endswith("/getAllAiInsights") for resource in resources)
+    assert any(resource.endswith("/getAllTranscripts") for resource in resources)
 
 
 @pytest.mark.parametrize("minutes,force,expected", [(10, False, 1), (50, False, 0), (50, True, 1)])

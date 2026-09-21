@@ -1,11 +1,13 @@
 # Stop if any command fails.
 $ErrorActionPreference = "Stop"
 
-# Your Microsoft 365 directory.
-$tenantId = "e781494f-04eb-465e-b6c7-09cca52f5631"
+# Your Microsoft 365 directory — copy this from AZURE_TENANT_ID in .env
+# (the single source of truth); do not hardcode it here.
+$tenantId = ""
 
-# The CURRENT NoteIQ application client ID.
-$appId = "54bbd41a-9e11-4578-a658-7ec30577d393"
+# The CURRENT NoteIQ application client ID — copy this from GRAPH_CLIENT_ID in .env
+# (the single source of truth); do not hardcode it here.
+$appId = ""
 
 # Praveen Singh's user Object ID — the user receiving meeting access.
 $userId = "e13f5eaa-e406-4880-95e4-3f7e2f44096a"

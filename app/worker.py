@@ -39,7 +39,7 @@ async def run_worker(store: Store, graph: GraphClient, repair: asyncio.Event):
     next_sync = 0.0
     while True:
         if time.monotonic() >= next_sync:
-            next_sync = time.monotonic() + 300
+            next_sync = time.monotonic() + 60
             for user_id in store.users():
                 queue_sync(store, user_id, discover=True)
         if repair.is_set() or time.monotonic() >= next_renewal:

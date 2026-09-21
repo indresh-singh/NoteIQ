@@ -219,13 +219,17 @@ def create_app(
                     item["flow"], dict(request.query_params)
                 )
             )
+            if "error" in result:
+                raise ValueError(result.get("error_description") or result["error"])
             claims = result.get("id_token_claims") or {}
             user_id = str(UUID(claims["oid"]))
             if UUID(claims["tid"]) != request.app.state.config.tenant_id:
                 raise ValueError("Wrong tenant")
-        except Exception:
+        except Exception as error:
+            # DEV ONLY: surfaces the real MSAL/Graph error for pilot testing.
+            # Replace with a generic message before wider release.
             return auth_result(
-                error="Microsoft sign-in failed. Use your organization's work account.",
+                error=f"Microsoft sign-in failed: {error}",
                 in_teams=item["in_teams"],
             )
         code = secrets.token_urlsafe(32)
@@ -532,10 +536,10 @@ def create_app(
         meeting = store.meeting(user["id"], meeting_id)
         if not meeting:
             raise HTTPException(404, "Meeting not found.")
-        if not settings().openrouter_enabled or (
-            settings().ai_provider != "openrouter" and meeting["content"].get("source") != "upload"
-        ):
-            raise HTTPException(409, "Switch AI_PROVIDER to openrouter to regenerate insights.")
+        if not settings().openrouter_enabled:
+            raise HTTPException(
+                409, "Configure OPENROUTER_API_KEY and OPENROUTER_MODEL to regenerate insights."
+            )
         transcripts = meeting["content"].get("transcripts") or []
         if not transcripts:
             raise HTTPException(409, "No transcript available to summarize yet.")
@@ -555,10 +559,11 @@ def create_app(
 
     @app.post("/api/sync")
     async def sync(request: Request, user: dict = Depends(current_user)):
-        from app.sync import queue_sync
+        from app.sync import sync_now
 
         request.app.state.repair.set()
-        return {"queued": queue_sync(request.app.state.store, user["id"], discover=True)}
+        queued = await sync_now(request.app.state.store, request.app.state.graph, user["id"])
+        return {"queued": queued}
 
     @app.post("/api/recover-meeting")
     async def recover_meeting(

@@ -1,7 +1,9 @@
 """Save Teams transcript text; Copilot generation happens independently in Microsoft 365.
 
-When AI_PROVIDER=openrouter, the same transcript text is sent to OpenRouter
-instead for the meeting summary and action items (see app/openrouter.py).
+Whenever OpenRouter is configured, the same transcript text is also sent to
+OpenRouter for a second, independent meeting summary and action item list
+(see app/openrouter.py) — Copilot and OpenRouter insights are captured side
+by side, not as an either/or choice.
 """
 
 import logging
@@ -122,7 +124,7 @@ async def process_transcript(event: TranscriptEvent, graph: GraphClient, store: 
             subject,
             TRANSCRIPT_READY,
         )
-        if settings().ai_provider == "openrouter":
+        if settings().openrouter_enabled:
             await summarize_with_openrouter(store, user_id, event, subject, text)
         return "TRANSCRIPT_SAVED"
     except httpx.HTTPStatusError as error:
