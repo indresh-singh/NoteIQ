@@ -29,7 +29,7 @@ class Settings(BaseModel):
     # API keys issued to an Enterprise project use the normal OpenAI API
     # endpoint; ChatGPT's interactive web endpoint is never called here.
     openai_api_key: SecretStr | None = None
-    openai_model: str = "gpt-5-nano"
+    openai_model: str = "gpt-5.6-luna"
     # A deliberately low application-side ceiling. This is per worker process;
     # keep the worker replica count low until the Enterprise project's limits
     # are known.
@@ -97,7 +97,7 @@ def settings() -> Settings:
         openrouter_api_key=os.getenv("OPENROUTER_API_KEY") or None,
         openrouter_model=os.getenv("OPENROUTER_MODEL") or None,
         openai_api_key=os.getenv("OPENAI_API_KEY") or None,
-        openai_model=os.getenv("OPENAI_MODEL", "gpt-5-nano"),
+        openai_model=os.getenv("OPENAI_MODEL", "gpt-5.6-luna"),
         openai_min_request_interval_seconds=os.getenv(
             "OPENAI_MIN_REQUEST_INTERVAL_SECONDS", "30"
         ),

@@ -43,10 +43,18 @@ class OpenAI:
                 {"role": "user", "content": user_prompt(subject, text)},
             ],
             "max_output_tokens": MAX_OUTPUT_TOKENS,
+            # Keep summaries concise and inexpensive, following the Responses
+            # controls used by the Enterprise example.
+            "text": {"format": {"type": "text"}, "verbosity": "medium"},
+            "reasoning": {"effort": "low"},
+            # Store the response as requested so it can be inspected in the
+            # Enterprise project. Do not add web-search tools: transcript
+            # summarisation should rely only on the supplied meeting content.
+            "store": True,
         }
         response = await self.request(**payload)
         try:
-            content = response.get("output_text") or ""
+            content = response_text(response)
             data = extract_json_object(content)
             return Insight.model_validate({**data, "id": f"openai:{key}"})
         except (TypeError, ValueError, ValidationError) as error:
@@ -110,3 +118,16 @@ class OpenAI:
                     exc_info=True,
                 )
                 raise ValueError("Unable to reach OpenAI.") from None
+
+
+def response_text(response: dict) -> str:
+    """Extract generated text from a REST response or an SDK-shaped test reply."""
+    if isinstance(response.get("output_text"), str):
+        return response["output_text"]
+    return "".join(
+        part.get("text", "")
+        for item in response.get("output", [])
+        if item.get("type") == "message"
+        for part in item.get("content", [])
+        if part.get("type") == "output_text" and isinstance(part.get("text"), str)
+    )

@@ -48,12 +48,13 @@ Container App environment variables as secret references where appropriate:
 | Name | Value |
 |---|---|
 | `OPENAI_API_KEY` | Your Enterprise project's API key (secret reference) |
-| `OPENAI_MODEL` | `gpt-5-nano` (the default) |
+| `OPENAI_MODEL` | `gpt-5.6-luna` (the default) |
 | `OPENAI_MIN_REQUEST_INTERVAL_SECONDS` | `30` (the default; 2 requests/minute per worker) |
 
 When `OPENAI_API_KEY` is present, OpenAI is the transcript-summary service and takes
 precedence over an optional OpenRouter configuration. The app sends meeting transcripts to
-the OpenAI Responses API. It caps each request at
+the OpenAI Responses API. Requests use low reasoning effort and medium verbosity, are stored
+in the Enterprise project, and cap each request at
 20,000 transcript characters and 1,200 output tokens, permits only one in-flight request
 per worker process, and spaces requests by the configured interval. Start with one worker
 replica; increasing worker replicas multiplies this application-side request ceiling.

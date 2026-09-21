@@ -9,7 +9,7 @@ from app.openai import MAX_OUTPUT_TOKENS, OpenAI
 
 def enable_openai(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-enterprise-test")
-    monkeypatch.setenv("OPENAI_MODEL", "gpt-5-nano")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-5.6-luna")
     monkeypatch.setenv("OPENAI_MIN_REQUEST_INTERVAL_SECONDS", "1")
     settings.cache_clear()
 
@@ -46,8 +46,36 @@ async def test_openai_uses_responses_api_and_parses_output_text(monkeypatch):
     assert insight.id == "openai:meeting-1"
     assert insight.meetingNotes[0].text == "Scope agreed."
     assert insight.actionItems[0].ownerDisplayName == "Ada"
-    assert payloads[0]["model"] == "gpt-5-nano"
+    assert payloads[0]["model"] == "gpt-5.6-luna"
     assert payloads[0]["max_output_tokens"] == MAX_OUTPUT_TOKENS
+    assert payloads[0]["text"] == {"format": {"type": "text"}, "verbosity": "medium"}
+    assert payloads[0]["reasoning"] == {"effort": "low"}
+    assert payloads[0]["store"] is True
+
+
+async def test_openai_parses_the_rest_api_output_array(monkeypatch):
+    enable_openai(monkeypatch)
+    mock_client(
+        monkeypatch,
+        lambda request: httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": '{"meetingNotes": [], "actionItems": []}',
+                            }
+                        ],
+                    }
+                ]
+            },
+        ),
+    )
+    insight = await OpenAI(settings()).summarize("meeting-1", "Planning", "Hello")
+    assert insight.id == "openai:meeting-1"
 
 
 @pytest.mark.parametrize("status,message", [(401, "rejected"), (429, "rate-limited")])

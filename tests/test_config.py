@@ -24,4 +24,4 @@ def test_openai_takes_precedence_when_its_key_is_configured(monkeypatch):
     assert config.openai_enabled is True
     assert config.external_ai_enabled is True
     assert config.summary_provider == "openai"
-    assert config.openai_model == "gpt-5-nano"
+    assert config.openai_model == "gpt-5.6-luna"
