@@ -7,6 +7,7 @@ never quietly turn it into a no-op.
 
 import time
 
+import httpx
 import pytest
 
 from app.sync import recover_from_link, settled
@@ -131,6 +132,49 @@ class TestRecoverFromLink:
         graph.list.return_value = []
         assert await recover_from_link(store, graph, USER, LINK) == {"found": 0, "queued": 0}
 
+    async def test_a_non_organizer_meeting_is_not_saved_or_scheduled(self, store, graph, caplog):
+        other = "99999999-9999-9999-9999-999999999999"
+        graph.list.return_value = [
+            {
+                "id": "m1",
+                "subject": "Someone else's meeting",
+                "participants": {
+                    "organizer": {"identity": {"user": {"id": other}}}
+                },
+            }
+        ]
+
+        result = await recover_from_link(store, graph, USER, LINK)
+
+        assert result["found"] == 1
+        assert result["eligible"] == 0
+        assert result["queued"] == 0
+        assert result["skipped_not_organizer"] == 1
+        assert "not its organizer" in result["message"]
+        assert store.meetings(USER) == []
+        assert store.next_job() is None
+        assert "reason=requested_user_is_not_organizer" in caplog.text
+
+    async def test_recovery_access_denial_is_reported_without_saving(self, store, graph):
+        request = httpx.Request("GET", "https://graph.microsoft.com/v1.0/test")
+        response = httpx.Response(
+            403,
+            request=request,
+            headers={"request-id": "recovery-denied"},
+            json={"error": {"code": "Forbidden"}},
+        )
+        graph.list.return_value = [{"id": "m1", "subject": "Restricted"}]
+        graph.request.side_effect = httpx.HTTPStatusError(
+            "denied", request=request, response=response
+        )
+
+        result = await recover_from_link(store, graph, USER, LINK)
+
+        assert result["eligible"] == 0
+        assert result["skipped_access_denied"] == 1
+        assert "denied access" in result["message"]
+        assert store.meetings(USER) == []
+
     @pytest.mark.parametrize(
         "link",
         ["http://teams.microsoft.com/meet/1", "https://evil.example.com/meet/1", "not-a-url"],
@@ -156,6 +200,25 @@ class TestRecoveryEndpoint:
             "/api/recover-meeting", headers=signed_in, json={"meeting_url": LINK}
         )
         assert response.status_code == 404
+
+    def test_a_found_meeting_owned_by_someone_else_is_a_clear_403(
+        self, client, signed_in, graph
+    ):
+        graph.list.return_value = [
+            {
+                "id": "m1",
+                "participants": {
+                    "organizer": {
+                        "identity": {"user": {"id": "99999999-9999-9999-9999-999999999999"}}
+                    }
+                },
+            }
+        ]
+        response = client.post(
+            "/api/recover-meeting", headers=signed_in, json={"meeting_url": LINK}
+        )
+        assert response.status_code == 403
+        assert "not its organizer" in response.json()["detail"]
 
     def test_a_bad_link_is_a_400_not_a_500(self, client, signed_in, graph):
         response = client.post(

@@ -46,6 +46,9 @@ def store(config):
 def graph():
     result = AsyncMock()
     result.list.return_value = []
+    result.request.return_value = {
+        "participants": {"organizer": {"identity": {"user": {"id": USER}}}}
+    }
     return result
 
 

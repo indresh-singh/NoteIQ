@@ -200,8 +200,11 @@ function renderMeetings(meetings, clickup, aiProvider, custom = false) {
 
     const dateLine = element("time", "");
     const hintLine = element("p", "", "hint");
+    const syncWarning = element("p", meeting.content.sync_message || "", "meeting-warning");
+    syncWarning.hidden = !meeting.content.sync_message;
+    syncWarning.setAttribute("role", "status");
     const footerLine = element("p", "", "hint");
-    article.append(dateLine, hintLine);
+    article.append(dateLine, hintLine, syncWarning);
 
     let activeContentButton = null;
 
@@ -573,9 +576,19 @@ $("#recover-meeting").onsubmit = async (event) => {
   button.disabled = true;
   try {
     const result = await api("/api/recover-meeting", {meeting_url: $("#meeting-url").value});
-    syncMessage = `Meeting found. Checking ${result.queued ? "transcript and Copilot insights" : "Microsoft 365"}…`;
+    syncMessage = result.message || `Meeting found. Checking ${result.queued ? "transcript and Copilot insights" : "Microsoft 365"}…`;
     setTimeout(() => refresh(), 1500);
-  } catch (error) { showError(error.message); }
+  } catch (error) {
+    if ([403, 409].includes(error.status)) {
+      // Ownership/access responses are durable meeting outcomes, not a
+      // transient toast. Keep the explanation in the status bar so the next
+      // 15-second refresh does not erase it before the user can read it.
+      syncMessage = error.message;
+      $("#status").textContent = syncMessage;
+      $(".statusbar").hidden = false;
+      showError();
+    } else showError(error.message);
+  }
   finally { button.disabled = false; }
 };
 $("#clickup-connect").onclick = async () => {

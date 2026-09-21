@@ -794,6 +794,14 @@ def create_app(
             raise HTTPException(400, str(error)) from None
         if not result["found"]:
             raise HTTPException(404, "Meeting not found for your organizer account.")
+        if not result.get("eligible", 1):
+            status = (
+                403
+                if result.get("skipped_not_organizer")
+                or result.get("skipped_access_denied")
+                else 409
+            )
+            raise HTTPException(status, result["message"])
         return result
 
     @app.get("/api/transcripts/{transcript_id}")

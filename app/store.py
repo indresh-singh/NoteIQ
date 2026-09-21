@@ -26,6 +26,17 @@ log = logging.getLogger(__name__)
 # meeting in the sweep for the full seven-day retention.
 PUBLICATION_WINDOW_HOURS = 6
 
+# A terminal meeting sync result is "settled" in the polling sense: another
+# minute-by-minute Graph call cannot make it actionable. Manual Refresh still
+# deliberately rechecks settled meetings, so a later ownership/access change
+# can recover without a database edit.
+TERMINAL_MEETING_SYNC_STATUSES = {
+    "SKIPPED_ACCESS_DENIED",
+    "SKIPPED_GRAPH_REJECTED",
+    "SKIPPED_NOT_ORGANIZER",
+    "SKIPPED_ORGANIZER_UNVERIFIED",
+}
+
 
 def _meeting_occurred_at(content: dict) -> float | None:
     """Best-effort real-world timestamp for a meeting.
@@ -81,6 +92,8 @@ def settled(content: dict) -> bool:
     existing id, which a poll reports as already known, so only the webhook ever
     delivers those.
     """
+    if content.get("sync_status") in TERMINAL_MEETING_SYNC_STATUSES:
+        return True
     transcripts = bodies(content, "transcript")
     if not transcripts:
         return False
@@ -1011,6 +1024,61 @@ class Store:
             len(bodies(content, "transcript")),
             len(bodies(content, "insight")),
         )
+
+    def set_meeting_sync_state(
+        self,
+        user_id: str,
+        meeting_id: str,
+        status: str | None,
+        message: str | None = None,
+        metadata: dict | None = None,
+    ) -> bool:
+        """Persist a meeting-level polling result without changing its title or age.
+
+        Keeping this state in the existing content document makes it available
+        to both SQLite/PostgreSQL and to the current meetings API without a
+        schema migration. A successful recheck clears the prior terminal state.
+        """
+        with self.connect() as db:
+            row = db.execute(
+                """SELECT id, content FROM meetings WHERE user_id=? AND meeting_id=?
+                ORDER BY id DESC LIMIT 1""",
+                (user_id, meeting_id),
+            ).fetchone()
+            if not row:
+                return False
+            content = json.loads(row["content"])
+            if status:
+                content["sync_status"] = status
+            else:
+                content.pop("sync_status", None)
+            if message:
+                content["sync_message"] = message
+            else:
+                content.pop("sync_message", None)
+            if metadata is not None:
+                content["meeting_metadata"] = metadata
+            facts = meeting_facts(content)
+            db.execute(
+                """UPDATE meetings SET content=?, occurred_at=COALESCE(?, occurred_at),
+                source=?, settled=?, newest_transcript_at=? WHERE id=?""",
+                (
+                    json.dumps(content),
+                    facts["occurred_at"],
+                    facts["source"],
+                    facts["settled"],
+                    facts["newest_transcript_at"],
+                    row["id"],
+                ),
+            )
+        log.info(
+            "Meeting sync state persisted user=%s meeting=%s status=%s terminal=%s",
+            user_id,
+            digest(meeting_id)[:8],
+            status or "CLEARED",
+            facts["settled"],
+        )
+        return True
 
     def save_transcript(self, user_id: str, meeting_id: str, transcript_id: str, text: str):
         with self.connect() as db:

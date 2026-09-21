@@ -1,5 +1,6 @@
 import json
 
+import httpx
 import pytest
 
 from app.config import settings
@@ -17,7 +18,7 @@ from tests.conftest import USER
 
 
 async def test_graph_list_id_can_differ_from_detail_id(store, graph, samples):
-    graph.request.side_effect = [samples["meeting"], samples["insight"]]
+    graph.request.side_effect = [samples["meeting"], samples["insight"], samples["meeting"]]
     event = InsightEvent(user_id=USER, meeting_id="m", insight_id="listing-alias")
     assert await process_insight(event, graph, store) == "SAVED"
     graph.list.side_effect = [[], [{"id": "listing-alias"}]]
@@ -39,9 +40,98 @@ async def test_missing_transcript_is_queued_without_duplicate_insight(store, gra
 async def test_transcript_failure_does_not_block_insight_recovery(store, graph):
     store.save_meeting(USER, "Meeting", {"meeting_id": "m"})
     graph.list.side_effect = [RuntimeError("unavailable"), [{"id": "i"}]]
-    with pytest.raises(RuntimeError, match="Retry"):
+    with pytest.raises(RuntimeError, match="unavailable"):
         await sync_meeting(MeetingSync(user_id=USER, meeting_id="m"), graph, store)
     assert json.loads(store.next_job()["payload"])["insight_id"] == "i"
+
+
+def graph_error(status: int, code: str = "Forbidden") -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "https://graph.microsoft.com/v1.0/test")
+    response = httpx.Response(
+        status,
+        request=request,
+        headers={"request-id": "graph-request", "client-request-id": "client-request"},
+        json={"error": {"code": code, "innerError": {"code": "DetailedInnerCode"}}},
+    )
+    return httpx.HTTPStatusError("Graph rejected request", request=request, response=response)
+
+
+async def test_sync_skips_non_organizer_and_persists_ui_message(store, graph, caplog):
+    other = "99999999-9999-9999-9999-999999999999"
+    store.save_meeting(USER, "Meeting", {"meeting_id": "m"})
+    graph.request.return_value = {
+        "id": "m",
+        "participants": {"organizer": {"identity": {"user": {"id": other}}}},
+        "creationDateTime": "2026-09-21T10:00:00Z",
+        "startDateTime": "2026-09-21T11:00:00Z",
+        "endDateTime": "2026-09-21T12:00:00Z",
+        "meetingType": "scheduled",
+    }
+
+    assert await sync_meeting(MeetingSync(user_id=USER, meeting_id="m"), graph, store) == (
+        "SKIPPED_NOT_ORGANIZER"
+    )
+    graph.list.assert_not_called()
+    content = store.find_meeting(USER, "m")
+    assert content["sync_status"] == "SKIPPED_NOT_ORGANIZER"
+    assert "not its organizer" in content["sync_message"]
+    assert queue_sync(store, USER) == 0
+    assert f"requested_user_id={USER} organizer_id={other}" in caplog.text
+    assert "reason=requested_user_is_not_organizer" in caplog.text
+
+
+@pytest.mark.parametrize("status", [401, 403])
+async def test_sync_access_denial_is_terminal_and_not_retried(store, graph, status):
+    store.save_meeting(USER, "Meeting", {"meeting_id": "m"})
+    graph.list.side_effect = [graph_error(status), []]
+
+    result = await sync_meeting(MeetingSync(user_id=USER, meeting_id="m"), graph, store)
+
+    assert result == "SKIPPED_ACCESS_DENIED"
+    assert graph.list.await_count == 2  # The other artifact is still diagnosed/recovered.
+    assert store.find_meeting(USER, "m")["sync_status"] == "SKIPPED_ACCESS_DENIED"
+    assert queue_sync(store, USER) == 0
+
+
+async def test_base_meeting_permanent_4xx_is_terminal(store, graph):
+    store.save_meeting(USER, "Meeting", {"meeting_id": "m"})
+    graph.request.side_effect = graph_error(404, "ItemNotFound")
+
+    result = await sync_meeting(MeetingSync(user_id=USER, meeting_id="m"), graph, store)
+
+    assert result == "SKIPPED_GRAPH_REJECTED"
+    graph.list.assert_not_called()
+    assert store.find_meeting(USER, "m")["sync_status"] == "SKIPPED_GRAPH_REJECTED"
+    assert queue_sync(store, USER) == 0
+
+
+async def test_base_meeting_transient_failure_is_retried(store, graph):
+    store.save_meeting(USER, "Meeting", {"meeting_id": "m"})
+    error = graph_error(503, "ServiceUnavailable")
+    graph.request.side_effect = error
+
+    with pytest.raises(httpx.HTTPStatusError) as raised:
+        await sync_meeting(MeetingSync(user_id=USER, meeting_id="m"), graph, store)
+
+    assert raised.value is error
+    graph.list.assert_not_called()
+    assert "sync_status" not in store.find_meeting(USER, "m")
+
+
+@pytest.mark.parametrize("status", [429, 500, 503])
+async def test_sync_transient_http_failures_keep_original_error_for_retry(
+    store, graph, status
+):
+    store.save_meeting(USER, "Meeting", {"meeting_id": "m"})
+    error = graph_error(status, "TooManyRequests" if status == 429 else "ServiceUnavailable")
+    graph.list.side_effect = [error, []]
+
+    with pytest.raises(httpx.HTTPStatusError) as raised:
+        await sync_meeting(MeetingSync(user_id=USER, meeting_id="m"), graph, store)
+
+    assert raised.value is error
+    assert graph.list.await_count == 2
+    assert "sync_status" not in store.find_meeting(USER, "m")
 
 
 async def test_copilot_insight_sync_runs_regardless_of_ai_provider(monkeypatch, store, graph):

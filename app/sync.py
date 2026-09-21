@@ -7,8 +7,9 @@ from urllib.parse import quote
 
 import httpx
 
+from app.graph_client import retryable
 from app.meetings import meeting_filter
-from app.models import InsightEvent, MeetingSync, TranscriptEvent, UserSync
+from app.models import InsightEvent, MeetingSync, TranscriptEvent, UserSync, age_seconds
 from app.store import (
     PUBLICATION_WINDOW_HOURS,
     bodies,
@@ -22,6 +23,19 @@ log = logging.getLogger(__name__)
 # How far back any sweep or manual refresh looks. Graph's own transcript
 # discovery is bounded to the same window.
 RECENT_SECONDS = 7 * 86400
+
+NOT_ORGANIZER_MESSAGE = (
+    "This meeting was found, but you are not its organizer. NoteIQ can only retrieve "
+    "transcripts and Copilot insights for meetings you organize."
+)
+ORGANIZER_UNVERIFIED_MESSAGE = (
+    "NoteIQ found the meeting but Microsoft Graph did not identify its organizer, so "
+    "the transcript and Copilot insights were not requested."
+)
+ACCESS_DENIED_MESSAGE = (
+    "Microsoft Graph denied access to this meeting's transcript or Copilot insights. "
+    "The meeting may have expired or its access may be restricted."
+)
 
 # bodies and settled live in app.store, which computes them once per write into
 # the columns the sweep reads; re-exported here because this is where the rules
@@ -162,20 +176,184 @@ async def sync_now(store, graph, user_id: str) -> int:
     return store.pending_job_count() - before
 
 
+def _organizer_id(meeting: dict) -> str:
+    organizer = (meeting.get("participants") or {}).get("organizer") or {}
+    return str(((organizer.get("identity") or {}).get("user") or {}).get("id") or "")
+
+
+def _meeting_metadata(meeting: dict) -> dict:
+    """Return useful, non-content meeting fields for the UI and diagnostics."""
+    return {
+        "organizer_id": _organizer_id(meeting) or None,
+        "meeting_type": meeting.get("meetingType") or meeting.get("type"),
+        "odata_type": meeting.get("@odata.type"),
+        "creation_date_time": meeting.get("creationDateTime"),
+        "start_date_time": meeting.get("startDateTime"),
+        "end_date_time": meeting.get("endDateTime"),
+        "expiration_date_time": meeting.get("expirationDateTime"),
+    }
+
+
+def _log_meeting_details(user_id: str, meeting_id: str, meeting: dict, source: str) -> None:
+    metadata = _meeting_metadata(meeting)
+    organizer_id = metadata["organizer_id"] or "-"
+    end_age = age_seconds(metadata["end_date_time"])
+    expiration_age = age_seconds(metadata["expiration_date_time"])
+    log.info(
+        "Meeting details source=%s requested_user_id=%s organizer_id=%s organizer_match=%s "
+        "meeting=%s meeting_type=%s odata_type=%s creation_time=%s start_time=%s "
+        "end_time=%s expiration_time=%s seconds_since_end=%s seconds_since_expiration=%s "
+        "allowed_presenters=%s record_automatically=%s",
+        source,
+        user_id,
+        organizer_id,
+        organizer_id.lower() == user_id.lower() if organizer_id != "-" else "unknown",
+        digest(meeting_id)[:8],
+        metadata["meeting_type"] or "-",
+        metadata["odata_type"] or "-",
+        metadata["creation_date_time"] or "-",
+        metadata["start_date_time"] or "-",
+        metadata["end_date_time"] or "-",
+        metadata["expiration_date_time"] or "-",
+        round(end_age) if end_age is not None else "unknown",
+        round(expiration_age) if expiration_age is not None else "unknown",
+        meeting.get("allowedPresenters", "-"),
+        meeting.get("recordAutomatically", "-"),
+    )
+
+
+def _http_error_fields(error: httpx.HTTPStatusError) -> tuple[str | None, str | None]:
+    try:
+        body = error.response.json().get("error") or {}
+    except (AttributeError, ValueError):
+        body = {}
+    return body.get("code"), (body.get("innerError") or {}).get("code")
+
+
+def _log_sync_http_failure(
+    *, user_id: str, meeting_id: str, phase: str, error: httpx.HTTPStatusError
+) -> None:
+    code, inner_code = _http_error_fields(error)
+    log.warning(
+        "Meeting sync Graph rejection user=%s meeting=%s phase=%s http_status=%s "
+        "retryable=%s graph_code=%s inner_code=%s request_id=%s client_request_id=%s",
+        user_id,
+        digest(meeting_id)[:8],
+        phase,
+        error.response.status_code,
+        retryable(error),
+        code,
+        inner_code,
+        error.response.headers.get("request-id", "-"),
+        error.response.headers.get("client-request-id", "-"),
+    )
+
+
 async def recover_from_link(store, graph, user_id, meeting_url):
     """Seed a missed meeting from its Teams join link, then fetch its artifacts."""
     meetings = await graph.list(
         f"/users/{user_id}/onlineMeetings?$filter=" + quote(meeting_filter(meeting_url), safe="")
     )
+    owned = []
+    skipped_not_organizer = 0
+    skipped_unverified = 0
+    skipped_access_denied = 0
     for meeting in meetings:
-        if meeting.get("id"):
-            store.save_meeting(
-                user_id,
-                meeting.get("subject") or "Teams meeting",
-                {"meeting_id": meeting["id"]},
+        meeting_id = meeting.get("id")
+        if not meeting_id:
+            log.warning(
+                "Meeting recovery result rejected user=%s reason=missing_meeting_id", user_id
             )
-    queued = queue_sync(store, user_id, within_window=False)
-    return {"found": len(meetings), "queued": queued}
+            skipped_unverified += 1
+            continue
+        # Graph list shapes can omit participants. Fetch the canonical meeting
+        # before deciding ownership rather than treating a missing field as a match.
+        if not _organizer_id(meeting):
+            path = f"/users/{user_id}/onlineMeetings/{quote(meeting_id, safe='')}"
+            try:
+                detail = await graph.request("GET", path)
+            except httpx.HTTPStatusError as error:
+                _log_sync_http_failure(
+                    user_id=user_id,
+                    meeting_id=meeting_id,
+                    phase="recovery_meeting",
+                    error=error,
+                )
+                if error.response.status_code not in {401, 403}:
+                    raise
+                skipped_access_denied += 1
+                log.warning(
+                    "Meeting recovery rejected requested_user_id=%s meeting=%s "
+                    "reason=access_denied http_status=%s ui_message=%r",
+                    user_id,
+                    digest(meeting_id)[:8],
+                    error.response.status_code,
+                    ACCESS_DENIED_MESSAGE,
+                )
+                continue
+            # Preserve list fields (notably subject) when a narrowed/mock detail
+            # response contains only the organizer fields needed for validation.
+            meeting = {**meeting, **detail}
+        _log_meeting_details(user_id, meeting_id, meeting, "recovery")
+        owner = _organizer_id(meeting)
+        if not owner:
+            skipped_unverified += 1
+            log.warning(
+                "Meeting recovery rejected requested_user_id=%s organizer_id=- meeting=%s "
+                "reason=organizer_unverified",
+                user_id,
+                digest(meeting_id)[:8],
+            )
+            continue
+        if owner.lower() != user_id.lower():
+            skipped_not_organizer += 1
+            log.warning(
+                "Meeting recovery rejected requested_user_id=%s organizer_id=%s meeting=%s "
+                "reason=requested_user_is_not_organizer ui_message=%r",
+                user_id,
+                owner,
+                digest(meeting_id)[:8],
+                NOT_ORGANIZER_MESSAGE,
+            )
+            continue
+        owned.append(meeting_id)
+        store.save_meeting(
+            user_id,
+            meeting.get("subject") or "Teams meeting",
+            {"meeting_id": meeting_id, "meeting_metadata": _meeting_metadata(meeting)},
+        )
+    queued = queue_sync(store, user_id, within_window=False) if owned else 0
+    result = {"found": len(meetings), "queued": queued}
+    if skipped_not_organizer or skipped_unverified or skipped_access_denied:
+        result.update(
+            {
+                "eligible": len(owned),
+                "skipped_not_organizer": skipped_not_organizer,
+                "skipped_organizer_unverified": skipped_unverified,
+                "skipped_access_denied": skipped_access_denied,
+                "message": (
+                    NOT_ORGANIZER_MESSAGE
+                    if skipped_not_organizer
+                    else (
+                        ACCESS_DENIED_MESSAGE
+                        if skipped_access_denied
+                        else ORGANIZER_UNVERIFIED_MESSAGE
+                    )
+                ),
+            }
+        )
+    log.info(
+        "Meeting recovery completed user=%s found=%s owned=%s skipped_not_organizer=%s "
+        "skipped_organizer_unverified=%s skipped_access_denied=%s queued=%s",
+        user_id,
+        len(meetings),
+        len(owned),
+        skipped_not_organizer,
+        skipped_unverified,
+        skipped_access_denied,
+        queued,
+    )
+    return result
 
 
 async def sync_meeting(event, graph, store):
@@ -188,7 +366,64 @@ async def sync_meeting(event, graph, store):
         return "SKIPPED_UNKNOWN_MEETING"
     path = f"/users/{user_id}/onlineMeetings/{quote(event.meeting_id, safe='')}"
     tag = digest(event.meeting_id)[:8]
-    failed = False
+    try:
+        meeting = await graph.request("GET", path)
+    except httpx.HTTPStatusError as error:
+        _log_sync_http_failure(
+            user_id=user_id, meeting_id=event.meeting_id, phase="meeting", error=error
+        )
+        if retryable(error):
+            raise
+        denied = error.response.status_code in {401, 403}
+        status = "SKIPPED_ACCESS_DENIED" if denied else "SKIPPED_GRAPH_REJECTED"
+        message = (
+            ACCESS_DENIED_MESSAGE
+            if denied
+            else "Microsoft Graph rejected this meeting request. See server logs for details."
+        )
+        store.set_meeting_sync_state(user_id, event.meeting_id, status, message)
+        return status
+
+    _log_meeting_details(user_id, event.meeting_id, meeting, "sync")
+    owner = _organizer_id(meeting)
+    if not owner:
+        store.set_meeting_sync_state(
+            user_id,
+            event.meeting_id,
+            "SKIPPED_ORGANIZER_UNVERIFIED",
+            ORGANIZER_UNVERIFIED_MESSAGE,
+            _meeting_metadata(meeting),
+        )
+        log.warning(
+            "Meeting artifact retrieval skipped requested_user_id=%s organizer_id=- meeting=%s "
+            "reason=organizer_unverified ui_message=%r",
+            user_id,
+            tag,
+            ORGANIZER_UNVERIFIED_MESSAGE,
+        )
+        return "SKIPPED_ORGANIZER_UNVERIFIED"
+    if owner.lower() != user_id.lower():
+        store.set_meeting_sync_state(
+            user_id,
+            event.meeting_id,
+            "SKIPPED_NOT_ORGANIZER",
+            NOT_ORGANIZER_MESSAGE,
+            _meeting_metadata(meeting),
+        )
+        log.warning(
+            "Meeting artifact retrieval skipped requested_user_id=%s organizer_id=%s meeting=%s "
+            "reason=requested_user_is_not_organizer ui_message=%r",
+            user_id,
+            owner,
+            tag,
+            NOT_ORGANIZER_MESSAGE,
+        )
+        return "SKIPPED_NOT_ORGANIZER"
+    store.set_meeting_sync_state(
+        user_id, event.meeting_id, None, metadata=_meeting_metadata(meeting)
+    )
+    transient_errors = []
+    permanent_errors = []
     # Copilot insight sync runs regardless of AI_PROVIDER: Copilot and OpenRouter
     # insights are captured side by side, not as an either/or choice.
     kinds = [
@@ -229,8 +464,14 @@ async def sync_meeting(event, graph, store):
                     kind,
                     len(fresh),
                 )
-        except Exception as error:
-            failed = True
+        except httpx.HTTPStatusError as error:
+            _log_sync_http_failure(
+                user_id=user_id, meeting_id=event.meeting_id, phase=kind, error=error
+            )
+            if retryable(error):
+                transient_errors.append(error)
+            else:
+                permanent_errors.append(error)
             log.exception(
                 "Meeting sync failed user=%s meeting=%s kind=%s resource=%s error_type=%s error=%s",
                 user_id,
@@ -240,6 +481,64 @@ async def sync_meeting(event, graph, store):
                 type(error).__name__,
                 error,
             )
-    if failed:
-        raise RuntimeError("Retry meeting sync")
+        except httpx.TransportError as error:
+            transient_errors.append(error)
+            log.exception(
+                "Meeting sync transport failure user=%s meeting=%s kind=%s resource=%s "
+                "retryable=true error_type=%s error=%s",
+                user_id,
+                tag,
+                kind,
+                resource,
+                type(error).__name__,
+                error,
+            )
+        except Exception as error:
+            # Unknown failures are retried instead of being silently declared
+            # permanent. Preserve the original exception and traceback rather
+            # than replacing it with an uninformative RuntimeError.
+            transient_errors.append(error)
+            log.exception(
+                "Meeting sync unexpected failure user=%s meeting=%s kind=%s resource=%s "
+                "retryable=unknown error_type=%s error=%s",
+                user_id,
+                tag,
+                kind,
+                resource,
+                type(error).__name__,
+                error,
+            )
+    if transient_errors:
+        log.warning(
+            "Meeting sync deferred user=%s meeting=%s transient_failures=%s "
+            "permanent_failures=%s successful_kinds=%s",
+            user_id,
+            tag,
+            len(transient_errors),
+            len(permanent_errors),
+            len(kinds) - len(transient_errors) - len(permanent_errors),
+        )
+        raise transient_errors[0]
+    if permanent_errors:
+        statuses = {error.response.status_code for error in permanent_errors}
+        denied = bool(statuses & {401, 403})
+        status = "SKIPPED_ACCESS_DENIED" if denied else "SKIPPED_GRAPH_REJECTED"
+        message = (
+            ACCESS_DENIED_MESSAGE
+            if denied
+            else "Microsoft Graph rejected this meeting's artifact request. See server logs for details."
+        )
+        store.set_meeting_sync_state(
+            user_id, event.meeting_id, status, message, _meeting_metadata(meeting)
+        )
+        log.warning(
+            "Meeting sync completed terminally user=%s meeting=%s status=%s http_statuses=%s "
+            "failed_kinds=%s",
+            user_id,
+            tag,
+            status,
+            sorted(statuses),
+            len(permanent_errors),
+        )
+        return status
     return "SYNCED"
