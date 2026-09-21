@@ -26,10 +26,6 @@ and asks you to reconnect if they differ. Teams context never grants API access.
 Notifications appear in **Teams Activity**, not meeting chat. A Graph `204` means
 Microsoft accepted delivery; banners depend on Teams notification settings.
 
-The September 13 investigation found an active transcript and insight subscription
-for Praveen, but Microsoft's insight subscription endpoint rejected Indresh with
-“does not have a valid Copilot license.” Fix that user's license before retrying
-the connection. This error does not prevent other users receiving content.
 
 Configure `NOTEIQ_DATABASE_URL` for persistent PostgreSQL storage. Without it,
 NoteIQ falls back to SQLite; container-local data can be lost on replacement.
