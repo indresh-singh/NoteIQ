@@ -3,6 +3,11 @@ import json
 import pytest
 
 from app.models import InsightEvent, UserSync, parse_event
+from app.notifications import (
+    UnsupportedNotificationResource,
+    notification_resource_shape,
+    validate_notifications,
+)
 from app.worker import run_job
 from tests.conftest import USER
 
@@ -52,6 +57,26 @@ def test_foreign_tenant_rejected(client, samples):
 def test_unenrolled_user_ignored(client, samples):
     assert client.post("/api/graph/notifications", json=samples["notification"]).status_code == 202
     assert client.app.state.store.next_job() is None
+
+
+def test_unrelated_created_resource_is_rejected_without_becoming_an_insight(client, store, samples):
+    samples["notification"]["value"][0]["resource"] = "communications/calls/sensitive-call-id"
+    assert client.post("/api/graph/notifications", json=samples["notification"]).status_code == 400
+    assert store.next_job() is None
+
+
+def test_unsupported_resource_shape_is_structural_and_redacts_identifiers(config, samples):
+    resource = "copilot/users/sensitive-user/onlineMeetings('sensitive-meeting')/aiInsights('secret')"
+    samples["notification"]["value"][0]["resource"] = resource
+    with pytest.raises(UnsupportedNotificationResource) as error:
+        validate_notifications(samples["notification"], config)
+    assert error.value.resource_shape == (
+        "prefix=copilot/users segments=5 meeting=parenthesized insight=parenthesized "
+        "transcript=absent query=no fragment=no"
+    )
+    assert "sensitive" not in error.value.resource_shape
+    assert "secret" not in error.value.resource_shape
+    assert notification_resource_shape(resource) == error.value.resource_shape
 
 
 def test_encoded_ids_round_trip():

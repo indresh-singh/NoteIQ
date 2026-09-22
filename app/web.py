@@ -850,11 +850,12 @@ def create_app(
         except (ValueError, TypeError) as error:
             log.warning(
                 "Graph webhook payload rejected lifecycle=%s content_length=%s "
-                "error_type=%s error=%s",
+                "error_type=%s error=%s resource_shape=%s",
                 lifecycle,
                 request.headers.get("content-length", "-"),
                 type(error).__name__,
                 error,
+                getattr(error, "resource_shape", "-"),
                 exc_info=True,
             )
             raise HTTPException(400, "Invalid notification") from None

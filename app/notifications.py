@@ -4,6 +4,43 @@ from app.config import Settings
 from app.models import InsightEvent, TranscriptEvent
 
 
+class UnsupportedNotificationResource(ValueError):
+    """A created notification whose resource is not an event we subscribe to."""
+
+    def __init__(self, resource: object):
+        super().__init__("Unsupported notification resource")
+        self.resource_shape = notification_resource_shape(resource)
+
+
+def notification_resource_shape(resource: object) -> str:
+    """Describe a Graph resource's syntax without putting its identifiers in logs."""
+    if not isinstance(resource, str):
+        return f"type={type(resource).__name__}"
+
+    path = resource.lstrip("/")
+    segments = [segment for segment in path.split("/") if segment]
+    if path.startswith("copilot/users/"):
+        prefix = "copilot/users"
+    elif path.startswith("users/"):
+        prefix = "users"
+    else:
+        prefix = "other"
+
+    def style(name: str) -> str:
+        if any(segment == name for segment in segments):
+            return "path"
+        if any(segment.startswith(f"{name}(") for segment in segments):
+            return "parenthesized"
+        return "absent"
+
+    return (
+        f"prefix={prefix} segments={len(segments)} "
+        f"meeting={style('onlineMeetings')} insight={style('aiInsights')} "
+        f"transcript={style('transcripts')} query={'yes' if '?' in resource else 'no'} "
+        f"fragment={'yes' if '#' in resource else 'no'}"
+    )
+
+
 def validate_notifications(payload: object, config: Settings, lifecycle: bool = False) -> list:
     """Returns event JSON strings normally, or (lifecycleEvent, resource) pairs when lifecycle=True."""
     if not isinstance(payload, dict) or not isinstance(payload.get("value"), list):
@@ -31,7 +68,16 @@ def validate_notifications(payload: object, config: Settings, lifecycle: bool = 
             resource = item.get("resource", "")
             if not isinstance(resource, str):
                 raise ValueError("Invalid resource")
-            model = TranscriptEvent if resource.lstrip("/").startswith("users/") else InsightEvent
-            event = model.from_resource(resource)
+            path = resource.lstrip("/")
+            if path.startswith("users/"):
+                model = TranscriptEvent
+            elif path.startswith("copilot/users/"):
+                model = InsightEvent
+            else:
+                raise UnsupportedNotificationResource(resource)
+            try:
+                event = model.from_resource(resource)
+            except ValueError as error:
+                raise UnsupportedNotificationResource(resource) from error
             messages.append(event.model_dump_json())
     return messages
