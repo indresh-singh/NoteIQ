@@ -115,6 +115,7 @@ Set protected values as Container App secrets and reference them from variables:
 | `clickup-client-secret` | `CLICKUP_CLIENT_SECRET=secretref:clickup-client-secret` | Optional ClickUp OAuth secret |
 | `clickup-token-key` | `CLICKUP_TOKEN_KEY=secretref:clickup-token-key` | Optional Fernet key for encrypted ClickUp tokens |
 | `openrouter-api-key` | `OPENROUTER_API_KEY=secretref:openrouter-api-key` | Required with `OPENROUTER_MODEL` when OpenRouter is used |
+| `openai-api-key` | `OPENAI_API_KEY=secretref:openai-api-key` | Enables ChatGPT Enterprise/OpenAI summaries and takes precedence over OpenRouter |
 
 The PostgreSQL URL format is:
 

@@ -79,6 +79,7 @@ In **Azure Portal → Container Apps → noteiq → Settings → Secrets**, add:
 |---|---|
 | `graph-client-secret` | The Entra client secret **Value** |
 | `graph-client-state` | A new random string of at least 32 characters |
+| `openai-api-key` | A rotated OpenAI project API key |
 
 Then open **Application → Revisions and replicas → Create new revision**. In the container's
 environment variables, set:
@@ -89,6 +90,9 @@ environment variables, set:
 | `GRAPH_CLIENT_ID` | Manual | Your `note-iq` client ID |
 | `GRAPH_CLIENT_SECRET` | Secret reference | `graph-client-secret` |
 | `GRAPH_CLIENT_STATE` | Secret reference | `graph-client-state` |
+| `OPENAI_API_KEY` | Secret reference | `openai-api-key` |
+| `OPENAI_MODEL` | Manual | `gpt-5.6-luna` |
+| `OPENAI_MIN_REQUEST_INTERVAL_SECONDS` | Manual | `30` |
 | `PUBLIC_BASE_URL` | Manual | The exact HTTPS URL from step 1 |
 | `NOTEIQ_DATABASE` | Manual | `/tmp/noteiq.sqlite3` |
 

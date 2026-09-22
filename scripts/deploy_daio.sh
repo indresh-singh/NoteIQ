@@ -7,8 +7,9 @@
 # Tags are immutable deployment identities: this script rejects a tag that is
 # already present in ACR or already names a Container App revision.
 #
-# The Graph client secret must already be configured on the Container App as a
-# secret reference. This script intentionally never accepts or prints it.
+# The Graph and OpenAI API secrets must already be configured on the Container
+# App as secret references. This script intentionally never accepts or prints
+# either value.
 set -Eeuo pipefail
 
 # Prefer the standard Azure CLI launcher. On this workstation Codex installed
@@ -46,6 +47,7 @@ readonly subscription_id="02fcef19-1aef-4374-8f4e-1d126a361dc8"
 readonly tenant_id="f0869253-be00-4a37-9c77-37742cb15c38"
 readonly graph_client_id="d6fc5dd5-578e-4ebd-a962-e16c84bd6be7"
 readonly graph_client_id_secret_name="graph-client-id"
+readonly openai_api_key_secret_name="openai-api-key"
 readonly teams_app_id="54bbd41a-9e11-4578-a658-7ec30577d393"
 readonly resource_group="rg-uaen-dev-daio-infra-001"
 readonly container_app="dev-daio-noteiq"
@@ -138,6 +140,19 @@ if [[ -z "$graph_secret_ref" ]]; then
   exit 9
 fi
 
+openai_secret_ref="$(az containerapp show \
+  --name "$container_app" \
+  --resource-group "$resource_group" \
+  --subscription "$subscription_id" \
+  --query "properties.template.containers[0].env[?name=='OPENAI_API_KEY'] | [0].secretRef" \
+  --output tsv)"
+if [[ -z "$openai_secret_ref" ]]; then
+  echo "OPENAI_API_KEY is not configured as a Container App secret reference." >&2
+  echo "Create the '$openai_api_key_secret_name' secret and bind OPENAI_API_KEY to it before deploying." >&2
+  echo "Do not put the API key in this script, an image layer, or a plain environment value." >&2
+  exit 14
+fi
+
 readonly image="${acr_server}/${image_repository}:${tag}"
 readonly revision_name="${container_app}--${tag}"
 
@@ -224,6 +239,9 @@ az containerapp update \
   --set-env-vars \
     "AZURE_TENANT_ID=$tenant_id" \
     "GRAPH_CLIENT_ID=secretref:$graph_client_id_secret_name" \
+    "OPENAI_API_KEY=secretref:$openai_secret_ref" \
+    "OPENAI_MODEL=gpt-5.6-luna" \
+    "OPENAI_MIN_REQUEST_INTERVAL_SECONDS=30" \
     "PUBLIC_BASE_URL=$public_base_url" \
     "TEAMS_APP_ID=$teams_app_id" \
   --only-show-errors \

@@ -120,8 +120,9 @@ Only the latest successful custom run is retained per user; a new successful run
 replaces previous custom records and transcript text. Failed analysis preserves
 the last successful result. The Meetings tab shows only Teams-synced records.
 
-Requires `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` in the running service.
-This upload feature uses OpenAI when `OPENAI_API_KEY` is configured; otherwise it uses OpenRouter.
+Requires `OPENAI_API_KEY`, or both `OPENROUTER_API_KEY` and `OPENROUTER_MODEL`, in the
+running service. The upload feature uses OpenAI when `OPENAI_API_KEY` is configured;
+otherwise it uses OpenRouter.
 The transcript is sent to that external provider; the key stays on the server.
 Limit: 60,000 characters. Analysis runs during the request (allow up to 90 seconds
 in your API client). Failed generation saves no new meeting; retry the upload.

@@ -45,6 +45,9 @@ Allow up to **30 minutes** for the policy to propagate. If `Get-CsTenant` fails,
 If your ChatGPT Enterprise organization provides an OpenAI API project key, add these
 Container App environment variables as secret references where appropriate:
 
+For local development, put `OPENAI_API_KEY` in the ignored `.env` file at the repository
+root; `app.config.settings()` loads it automatically. Never commit that file.
+
 | Name | Value |
 |---|---|
 | `OPENAI_API_KEY` | Your Enterprise project's API key (secret reference) |
