@@ -30,7 +30,7 @@
         <div><p id="greeting" class="eyebrow"></p><h1>Your meetings</h1></div>
         <div class="buttons"><button id="refresh">Refresh</button><button id="signout">Sign out</button></div>
       </div>
-      <div class="buttons workspace-tabs" role="tablist" aria-label="Transcript source">
+      <div class="workspace-tabs" role="tablist" aria-label="Transcript source">
         <button type="button" id="meetings-tab" role="tab" aria-selected="true" aria-controls="meetings-panel">Meetings</button>
         <button type="button" id="upload-tab" role="tab" aria-selected="false" aria-controls="upload-panel" tabindex="-1">Upload transcript</button>
       </div>
@@ -54,17 +54,17 @@
       <div class="statusbar"><span class="dot"></span><p id="status" role="status"></p><button id="retry" hidden>Retry connection</button></div>
       <p id="notification-status" class="hint" role="status">NoteIQ will notify you once in Teams Activity when a meeting's AI insights are ready.</p>
       <button id="notification-retry" hidden>Retry notifications</button>
-      <form id="recover-meeting" class="recover-meeting">
-        <label for="meeting-url">Missed a meeting? Paste its Teams join link to check its transcript and Copilot insights.</label>
-        <input id="meeting-url" type="url" required placeholder="https://teams.microsoft.com/meet/...">
-        <button>Check meeting</button>
-      </form>
       <div id="meetings"></div>
       <div id="empty" class="empty" hidden>
         <h2>Ready for your next meeting</h2>
         <p>Organize a Teams meeting and turn on transcription. Your transcript will appear first, followed by Copilot notes when they're ready.</p>
         <p class="hint">Insights can take up to four hours after a meeting ends. This app follows meetings from the time you connect.</p>
       </div>
+      <form id="recover-meeting" class="recover-meeting">
+        <label for="meeting-url">Missed a meeting? Paste its Teams join link to check its transcript and Copilot insights.</label>
+        <input id="meeting-url" type="url" required placeholder="https://teams.microsoft.com/meet/...">
+        <button>Check meeting</button>
+      </form>
       </section>
       <details class="account"><summary>Account settings</summary>
         <section id="clickup-settings" hidden>

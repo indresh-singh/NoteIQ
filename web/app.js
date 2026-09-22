@@ -14,6 +14,8 @@ let previousMeetings = "";
 let previousUploads = "";
 let previousClickUp = "";
 let chaseId = 0;
+const MEETINGS_PAGE_SIZE = 5;
+let meetingsPage = 1;
 try { token = sessionStorage.getItem("noteiq-session") || ""; } catch { /* Memory-only fallback. */ }
 
 function remember(value) {
@@ -181,7 +183,14 @@ function renderMeetings(meetings, clickup, summaryProvider, custom = false) {
   const target = $(custom ? "#custom-transcripts" : "#meetings");
   target.replaceChildren();
   $(custom ? "#uploads-empty" : "#empty").hidden = meetings.length > 0;
-  for (const meeting of meetings) {
+  // Custom uploads are already capped to one entry by the caller; only the
+  // main meetings list is long enough to need paging.
+  const totalPages = custom ? 1 : Math.max(1, Math.ceil(meetings.length / MEETINGS_PAGE_SIZE));
+  if (!custom) meetingsPage = Math.min(Math.max(1, meetingsPage), totalPages);
+  const pageMeetings = custom
+    ? meetings
+    : meetings.slice((meetingsPage - 1) * MEETINGS_PAGE_SIZE, meetingsPage * MEETINGS_PAGE_SIZE);
+  for (const meeting of pageMeetings) {
     const article = element("article", "", "meeting");
     article.append(element("p", custom ? "CUSTOM TRANSCRIPT" : "MEETING FOLLOW-UP", "eyebrow"), element("h2", meeting.subject));
 
@@ -415,6 +424,27 @@ function renderMeetings(meetings, clickup, summaryProvider, custom = false) {
     updateToggle();
     target.append(article);
     buttons.firstChild.click();
+  }
+  if (!custom && meetings.length > MEETINGS_PAGE_SIZE) {
+    const pager = element("nav", "", "pagination");
+    pager.setAttribute("aria-label", "Meetings pages");
+    const goToPage = (page) => {
+      meetingsPage = page;
+      previousMeetings = ""; // force a rebuild even though the data hasn't changed
+      renderMeetings(meetings, clickup, aiProvider);
+    };
+    const previous = element("button", "Previous");
+    previous.type = "button";
+    previous.disabled = meetingsPage <= 1;
+    previous.onclick = () => goToPage(meetingsPage - 1);
+    const status = element("span", `Page ${meetingsPage} of ${totalPages}`, "pagination-status");
+    status.setAttribute("aria-live", "polite");
+    const next = element("button", "Next");
+    next.type = "button";
+    next.disabled = meetingsPage >= totalPages;
+    next.onclick = () => goToPage(meetingsPage + 1);
+    pager.append(previous, status, next);
+    target.append(pager);
   }
 }
 
