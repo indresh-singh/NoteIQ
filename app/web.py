@@ -81,6 +81,10 @@ class CustomTranscript(BaseModel):
     text: str = Field(min_length=1, max_length=MAX_TRANSCRIPT_CHARS)
 
 
+class RegenerateInsight(BaseModel):
+    provider: Literal["openrouter", "openai"] | None = None
+
+
 class MeetingRecovery(BaseModel):
     meeting_url: str = Field(min_length=20, max_length=2000)
 
@@ -181,13 +185,13 @@ def create_app(
             )
             log.info(
                 "Application startup complete role=%s background_requested=%s worker_started=%s "
-                "storage=%s clickup_enabled=%s summary_provider=%s duration_ms=%d",
+                "storage=%s clickup_enabled=%s summary_providers=%s duration_ms=%d",
                 app.state.config.role,
                 background,
                 task is not None,
                 "postgresql" if app.state.config.database_url else "sqlite",
                 app.state.config.clickup_enabled,
-                app.state.config.summary_provider,
+                ",".join(app.state.config.summary_providers),
                 (time.monotonic() - startup_started) * 1000,
             )
             yield
@@ -440,6 +444,7 @@ def create_app(
             **{key: user[key] for key in ("id", "name", "status")},
             "notifications": "DELIVERY_ERROR" if failed else "READY",
             "summary_provider": request.app.state.config.summary_provider,
+            "summary_providers": request.app.state.config.summary_providers,
             "clickup": {
                 "available": request.app.state.clickup is not None,
                 "connected": bool(request.app.state.store.clickup(user["id"])),
@@ -931,13 +936,18 @@ def create_app(
 
     @app.post("/api/meetings/{meeting_id}/regenerate")
     async def regenerate_insight(
-        meeting_id: int, request: Request, user: dict = Depends(current_user)
+        meeting_id: int,
+        body: RegenerateInsight,
+        request: Request,
+        user: dict = Depends(current_user),
     ):
         store = request.app.state.store
         meeting = store.meeting(user["id"], meeting_id)
         if not meeting:
             raise HTTPException(404, "Meeting not found.")
-        if not settings().external_ai_enabled:
+        config = settings()
+        provider = body.provider or config.summary_provider
+        if provider not in config.external_summary_providers:
             raise HTTPException(
                 409, "Configure the selected AI provider to regenerate insights."
             )
@@ -955,7 +965,9 @@ def create_app(
             meeting_id=meeting["content"]["meeting_id"],
             transcript_id=latest["id"],
         )
-        ok = await summarize_with_ai(store, user["id"], event, meeting["subject"], text)
+        ok = await summarize_with_ai(
+            store, user["id"], event, meeting["subject"], text, provider=provider
+        )
         if not ok:
             raise HTTPException(502, "The AI provider could not generate a summary. Try again.")
         return store.meeting(user["id"], meeting_id)

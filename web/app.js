@@ -175,9 +175,9 @@ function providerLabel(provider) {
   return "Microsoft 365 Copilot";
 }
 
-function renderMeetings(meetings, clickup, planner, summaryProvider, custom = false) {
+function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProviders, custom = false) {
   const signature =
-    JSON.stringify(meetings) + summaryProvider + JSON.stringify(clickup) + JSON.stringify(planner);
+    JSON.stringify(meetings) + summaryProvider + JSON.stringify(summaryProviders) + JSON.stringify(clickup) + JSON.stringify(planner);
   if (signature === (custom ? previousUploads : previousMeetings)) return;
   if (custom) previousUploads = signature;
   else previousMeetings = signature;
@@ -196,20 +196,21 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, custom = fa
     article.append(element("p", custom ? "CUSTOM TRANSCRIPT" : "MEETING FOLLOW-UP", "eyebrow"), element("h2", meeting.subject));
 
     // Every insight segment carries its own provider tag; group them so the
-    // toggle below can show exactly one provider's data at a time instead of
-    // merging Copilot's and the configured external service's notes/action items together.
+    // toggle below can show exactly one provider's data at a time.
     const segments = meeting.content.insights || (meeting.content.insight ? [{insight: meeting.content.insight}] : []);
-    const externalProvider = summaryProvider === "openai" ? "openai" : "openrouter";
-    const providerOf = (segment) => segment.insight?.provider === externalProvider ? externalProvider : "copilot";
-    const byProvider = {
-      copilot: segments.filter((segment) => providerOf(segment) === "copilot"),
-      [externalProvider]: segments.filter((segment) => providerOf(segment) === externalProvider),
-    };
+    const providerOrder = ["copilot", "openai", "openrouter"];
+    const configuredProviders = new Set(summaryProviders || ["copilot", summaryProvider]);
+    const providerOf = (segment) => providerOrder.includes(segment.insight?.provider)
+      ? segment.insight.provider : "copilot";
+    const byProvider = Object.fromEntries(providerOrder.map((provider) => [
+      provider, segments.filter((segment) => providerOf(segment) === provider),
+    ]));
     const hasTranscript = (meeting.content.transcripts || []).length > 0;
-    const showToggle = byProvider.copilot.length > 0 || byProvider[externalProvider].length > 0 || hasTranscript;
-    let selected = byProvider.copilot.length && !byProvider[externalProvider].length ? "copilot"
-      : byProvider[externalProvider].length && !byProvider.copilot.length ? externalProvider
-      : summaryProvider === externalProvider ? externalProvider : "copilot";
+    const showToggle = providerOrder.some((provider) => byProvider[provider].length) || hasTranscript;
+    const providersWithContent = providerOrder.filter((provider) => byProvider[provider].length);
+    let selected = providersWithContent.length === 1 ? providersWithContent[0]
+      : providersWithContent.includes(summaryProvider) ? summaryProvider
+      : providersWithContent[0] || summaryProvider || "copilot";
 
     const dateLine = element("time", "");
     const hintLine = element("p", "", "hint");
@@ -239,25 +240,30 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, custom = fa
     const providerStates = element("div", "", "provider-states");
     providerStates.setAttribute("role", "radiogroup");
     providerStates.setAttribute("aria-label", "Meeting insight source");
-    const copilotState = element("button", "Copilot", "provider-state");
-    const externalState = element("button", providerLabel(externalProvider), "provider-state");
-    for (const state of [copilotState, externalState]) {
+    const providerButtons = new Map(providerOrder.map((provider) => [
+      provider, element("button", provider === "copilot" ? "Copilot" : providerLabel(provider), "provider-state"),
+    ]));
+    for (const [provider, state] of providerButtons) {
       state.type = "button";
       state.setAttribute("role", "radio");
+      state.onclick = () => selectProvider(provider);
+      providerStates.append(state);
     }
-    providerStates.append(copilotState, externalState);
     const regenerateButton = element("button", "", "regenerate-button");
     regenerateButton.append(element("span", "⟳", "regenerate-icon"), document.createTextNode(" Regenerate"));
     providerToggle.append(providerStates, regenerateButton);
     if (showToggle && !custom) article.append(providerToggle);
 
     function updateToggle() {
-      const externalSelected = selected === externalProvider;
-      copilotState.setAttribute("aria-checked", String(!externalSelected));
-      externalState.setAttribute("aria-checked", String(externalSelected));
-      copilotState.tabIndex = externalSelected ? -1 : 0;
-      externalState.tabIndex = externalSelected ? 0 : -1;
+      const externalSelected = selected !== "copilot";
+      for (const [provider, state] of providerButtons) {
+        state.setAttribute("aria-checked", String(provider === selected));
+        state.tabIndex = provider === selected ? 0 : -1;
+      }
       regenerateButton.hidden = !externalSelected;
+      regenerateButton.disabled = externalSelected && !configuredProviders.has(selected);
+      regenerateButton.title = regenerateButton.disabled
+        ? `${providerLabel(selected)} is not configured.` : "";
     }
 
     function selectProvider(provider) {
@@ -267,26 +273,28 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, custom = fa
       updateExportVisibility();
       if (activeContentButton) activeContentButton.click();
     }
-    copilotState.onclick = () => selectProvider("copilot");
-    externalState.onclick = () => selectProvider(externalProvider);
     providerStates.onkeydown = (event) => {
       if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
       event.preventDefault();
-      const provider = event.key === "ArrowRight" || event.key === "End" ? externalProvider : "copilot";
+      const current = providerOrder.indexOf(selected);
+      const index = event.key === "Home" ? 0
+        : event.key === "End" ? providerOrder.length - 1
+        : (current + (event.key === "ArrowRight" ? 1 : -1) + providerOrder.length) % providerOrder.length;
+      const provider = providerOrder[index];
       selectProvider(provider);
-      (provider === externalProvider ? externalState : copilotState).focus();
+      providerButtons.get(provider).focus();
     };
     regenerateButton.onclick = async () => {
       regenerateButton.disabled = true;
       regenerateButton.classList.add("spinning");
       try {
-        await api(`/api/meetings/${meeting.id}/regenerate`, {}, 90000);
+        await api(`/api/meetings/${meeting.id}/regenerate`, {provider: selected}, 90000);
         await refresh();
       } catch (error) {
         showError(error.message);
       } finally {
-        regenerateButton.disabled = false;
         regenerateButton.classList.remove("spinning");
+        updateToggle();
       }
     };
 
@@ -438,7 +446,7 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, custom = fa
         const section = element("details", "", "custom-insight-section");
         section.open = true;
         section.append(element("summary", label));
-        const items = byProvider.openrouter.flatMap((segment) => segment.insight?.[field] || []);
+        const items = byProvider[selected].flatMap((segment) => segment.insight?.[field] || []);
         if (!items.length) section.append(element("p", "No items identified."));
         for (const item of items) {
           section.append(renderNote(item));
@@ -471,7 +479,7 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, custom = fa
     const goToPage = (page) => {
       meetingsPage = page;
       previousMeetings = ""; // force a rebuild even though the data hasn't changed
-      renderMeetings(meetings, clickup, planner, summaryProvider);
+      renderMeetings(meetings, clickup, planner, summaryProvider, summaryProviders);
     };
     const previous = element("button", "Previous");
     previous.type = "button";
@@ -750,8 +758,8 @@ async function refresh(sync = false) {
       : "NoteIQ will notify you once in Teams Activity when a meeting's AI insights are ready.";
     $("#notification-retry").hidden = !notificationError;
     $("#retry").hidden = !["ACCESS_REQUIRED", "CONNECTION_ERROR"].includes(user.status);
-    renderMeetings(meetings.filter((m) => m.content.source !== "upload"), clickup, planner, user.summary_provider);
-    renderMeetings(meetings.filter((m) => m.content.source === "upload").slice(0, 1), clickup, planner, user.summary_provider, true);
+    renderMeetings(meetings.filter((m) => m.content.source !== "upload"), clickup, planner, user.summary_provider, user.summary_providers);
+    renderMeetings(meetings.filter((m) => m.content.source === "upload").slice(0, 1), clickup, planner, user.summary_provider, user.summary_providers, true);
     renderClickUp(clickup);
     renderPlanner(planner);
     showError();

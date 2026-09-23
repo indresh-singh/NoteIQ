@@ -99,7 +99,7 @@ Set these normal Container App environment variables:
 | `TEAMS_APP_ID` | Stable Teams package ID; normally the same as `GRAPH_CLIENT_ID` |
 | `PUBLIC_BASE_URL` | `https://noteiq.salmontree-16ed39aa.uaenorth.azurecontainerapps.io` |
 | `CLICKUP_CLIENT_ID` | Optional ClickUp OAuth client ID |
-| `OPENAI_API_KEY` | Optional; enables ChatGPT Enterprise / OpenAI meeting summaries and takes precedence over OpenRouter |
+| `OPENAI_API_KEY` | Optional; enables ChatGPT Enterprise / OpenAI meeting summaries alongside Copilot and OpenRouter |
 | `OPENROUTER_MODEL` | Required with `OPENROUTER_API_KEY`: the OpenRouter model id, e.g. `openai/gpt-4o-mini` |
 | `NOTEIQ_ROLE` | `all` (default) runs the web tier and the background worker in one process. `web` and `worker` split them into separate Container Apps; see [scaling](scaling.md) |
 | `NOTEIQ_JOB_CONCURRENCY` | How many queued jobs the worker runs at once. Default `4`, maximum `32` |
@@ -115,7 +115,7 @@ Set protected values as Container App secrets and reference them from variables:
 | `clickup-client-secret` | `CLICKUP_CLIENT_SECRET=secretref:clickup-client-secret` | Optional ClickUp OAuth secret |
 | `clickup-token-key` | `CLICKUP_TOKEN_KEY=secretref:clickup-token-key` | Optional Fernet key for encrypted ClickUp tokens |
 | `openrouter-api-key` | `OPENROUTER_API_KEY=secretref:openrouter-api-key` | Required with `OPENROUTER_MODEL` when OpenRouter is used |
-| `openai-api-key` | `OPENAI_API_KEY=secretref:openai-api-key` | Enables ChatGPT Enterprise/OpenAI summaries and takes precedence over OpenRouter |
+| `openai-api-key` | `OPENAI_API_KEY=secretref:openai-api-key` | Enables ChatGPT Enterprise/OpenAI summaries alongside the other configured providers |
 
 The PostgreSQL URL format is:
 

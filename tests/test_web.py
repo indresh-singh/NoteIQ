@@ -44,7 +44,9 @@ def callback(client, state):
 
 
 def test_me_reports_the_active_summary_provider(client, store, signed_in):
-    assert client.get("/api/me", headers=signed_in).json()["summary_provider"] == "copilot"
+    body = client.get("/api/me", headers=signed_in).json()
+    assert body["summary_provider"] == "copilot"
+    assert body["summary_providers"] == ["copilot"]
 
 
 def test_login_enrolls_verified_user_and_starts_updates(client, monkeypatch):

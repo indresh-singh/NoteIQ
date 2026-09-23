@@ -54,6 +54,24 @@ def test_regenerate_replaces_openrouter_insight(monkeypatch, client, store, sign
     assert insights[0]["insight"]["provider"] == "openrouter"
 
 
+def test_regenerate_can_select_openrouter_when_openai_is_preferred(
+    monkeypatch, client, store, signed_in
+):
+    enable_openrouter(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-enterprise-test")
+    settings.cache_clear()
+    monkeypatch.setattr("app.transcripts.OpenRouter", FakeOpenRouter)
+    meeting_id = seed_meeting_with_transcript(store)
+
+    response = client.post(
+        f"/api/meetings/{meeting_id}/regenerate",
+        headers=signed_in,
+        json={"provider": "openrouter"},
+    )
+    assert response.status_code == 200
+    assert response.json()["content"]["insights"][0]["insight"]["provider"] == "openrouter"
+
+
 def test_regenerate_requires_an_external_summary_service(client, store, signed_in):
     meeting_id = seed_meeting_with_transcript(store)
     response = client.post(f"/api/meetings/{meeting_id}/regenerate", headers=signed_in, json={})

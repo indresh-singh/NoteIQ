@@ -70,13 +70,25 @@ class Settings(BaseModel):
         return self.openai_enabled or self.openrouter_enabled
 
     @property
+    def external_summary_providers(self) -> tuple[str, ...]:
+        """Every configured external provider, in preferred display order."""
+        return tuple(
+            provider
+            for provider, enabled in (
+                ("openai", self.openai_enabled),
+                ("openrouter", self.openrouter_enabled),
+            )
+            if enabled
+        )
+
+    @property
+    def summary_providers(self) -> tuple[str, ...]:
+        return ("copilot", *self.external_summary_providers)
+
+    @property
     def summary_provider(self) -> str:
-        """Configured transcript-summary service; OpenAI takes precedence."""
-        if self.openai_enabled:
-            return "openai"
-        if self.openrouter_enabled:
-            return "openrouter"
-        return "copilot"
+        """Preferred provider for flows that produce only one summary."""
+        return self.external_summary_providers[0] if self.external_summary_providers else "copilot"
 
 
 @lru_cache

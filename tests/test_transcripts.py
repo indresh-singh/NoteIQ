@@ -175,6 +175,37 @@ async def test_openrouter_failure_does_not_fail_transcript_processing(monkeypatc
     assert store.meetings(USER)[0]["content"].get("insights") is None
 
 
+async def test_all_configured_external_providers_generate_independent_insights(
+    monkeypatch, store, samples
+):
+    enable_openrouter(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-enterprise-test")
+    settings.cache_clear()
+
+    class FakeProvider:
+        def __init__(self, config):
+            pass
+
+        async def summarize(self, transcript_id, subject, text):
+            provider = "openai" if type(self).__name__ == "FakeOpenAI" else "openrouter"
+            return Insight(id=f"{provider}:{transcript_id}", meetingNotes=[{"text": provider}])
+
+    class FakeOpenAI(FakeProvider):
+        pass
+
+    class FakeOpenRouter(FakeProvider):
+        pass
+
+    monkeypatch.setattr("app.transcripts.OpenAI", FakeOpenAI)
+    monkeypatch.setattr("app.transcripts.OpenRouter", FakeOpenRouter)
+    graph = AsyncMock()
+    graph.request.side_effect = [samples["meeting"], {"id": "transcript"}, "WEBVTT\nHello"]
+
+    assert await process_transcript(event(), graph, store) == "TRANSCRIPT_SAVED"
+    insights = store.meetings(USER)[0]["content"]["insights"]
+    assert {item["insight"]["provider"] for item in insights} == {"openai", "openrouter"}
+
+
 async def test_both_id_forms_are_recorded_so_the_next_sync_skips_the_transcript(
     store, graph, samples
 ):
