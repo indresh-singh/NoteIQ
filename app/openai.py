@@ -7,6 +7,7 @@ limiter is introduced.
 """
 
 import asyncio
+import json
 import logging
 import time
 
@@ -16,7 +17,6 @@ from pydantic import ValidationError
 from app.config import Settings
 from app.models import Insight
 from app.observability import response_diagnostics
-from app.openrouter import extract_json_object
 from app.prompts.meeting_summary import SYSTEM_PROMPT, user_prompt
 
 log = logging.getLogger(__name__)
@@ -24,6 +24,44 @@ log = logging.getLogger(__name__)
 API = "https://api.openai.com/v1/responses"
 MAX_TRANSCRIPT_CHARS = 20_000
 MAX_OUTPUT_TOKENS = 1_200
+MEETING_SUMMARY_FORMAT = {
+    "type": "json_schema",
+    "name": "meeting_summary",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "meetingNotes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "title": {"type": ["string", "null"]},
+                        "text": {"type": ["string", "null"]},
+                    },
+                    "required": ["title", "text"],
+                },
+            },
+            "actionItems": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "title": {"type": ["string", "null"]},
+                        "text": {"type": ["string", "null"]},
+                        "ownerDisplayName": {"type": ["string", "null"]},
+                        "dueDate": {"type": ["string", "null"]},
+                    },
+                    "required": ["title", "text", "ownerDisplayName", "dueDate"],
+                },
+            },
+        },
+        "required": ["meetingNotes", "actionItems"],
+    },
+}
 _request_lock = asyncio.Lock()
 _next_request_at = 0.0
 
@@ -45,7 +83,7 @@ class OpenAI:
             "max_output_tokens": MAX_OUTPUT_TOKENS,
             # Keep summaries concise and inexpensive, following the Responses
             # controls used by the Enterprise example.
-            "text": {"format": {"type": "text"}, "verbosity": "medium"},
+            "text": {"format": MEETING_SUMMARY_FORMAT, "verbosity": "medium"},
             "reasoning": {"effort": "low"},
             # Store the response as requested so it can be inspected in the
             # Enterprise project. Do not add web-search tools: transcript
@@ -55,7 +93,7 @@ class OpenAI:
         response = await self.request(**payload)
         try:
             content = response_text(response)
-            data = extract_json_object(content)
+            data = json.loads(content)
             return Insight.model_validate({**data, "id": f"openai:{key}"})
         except (TypeError, ValueError, ValidationError) as error:
             log.warning(

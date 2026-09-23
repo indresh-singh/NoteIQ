@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from app.config import settings
-from app.openai import MAX_OUTPUT_TOKENS, OpenAI
+from app.openai import MAX_OUTPUT_TOKENS, MEETING_SUMMARY_FORMAT, OpenAI
 
 
 def enable_openai(monkeypatch):
@@ -48,7 +48,14 @@ async def test_openai_uses_responses_api_and_parses_output_text(monkeypatch):
     assert insight.actionItems[0].ownerDisplayName == "Ada"
     assert payloads[0]["model"] == "gpt-5.6-luna"
     assert payloads[0]["max_output_tokens"] == MAX_OUTPUT_TOKENS
-    assert payloads[0]["text"] == {"format": {"type": "text"}, "verbosity": "medium"}
+    assert payloads[0]["text"] == {
+        "format": MEETING_SUMMARY_FORMAT,
+        "verbosity": "medium",
+    }
+    schema = payloads[0]["text"]["format"]
+    assert schema["type"] == "json_schema"
+    assert schema["strict"] is True
+    assert schema["schema"]["additionalProperties"] is False
     assert payloads[0]["reasoning"] == {"effort": "low"}
     assert payloads[0]["store"] is True
 
