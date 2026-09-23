@@ -159,39 +159,16 @@ function element(tag, text, className) {
   return node;
 }
 
-// Each List/Plan gets a distinct accent so several destinations stay easy to
-// tell apart at a glance, the way a colored left border sets task cards apart.
-const PICKER_COLORS = ["#2f9e64", "#4f6bed", "#c2740c", "#db2777", "#0891b2", "#8b5cf6"];
-
-function createOptionPicker(items, className) {
-  const picker = element("details", "", `option-picker ${className}`);
-  const summary = element("summary");
-  const swatch = element("span", "", "option-picker-swatch");
-  const label = element("span", "", "option-picker-label");
-  summary.append(swatch, label);
-  const list = element("ul", "", "option-picker-list");
-  const options = items.map((item, index) => {
-    const color = PICKER_COLORS[index % PICKER_COLORS.length];
-    const option = element("li", "", "option-picker-option");
-    option.setAttribute("role", "option");
-    option.style.setProperty("--picker-border", color);
-    option.append(element("span", item.label));
-    option.onclick = () => select(index);
-    list.append(option);
-    return option;
-  });
-  let selectedIndex = Math.max(0, items.findIndex((item) => item.selected));
-  function select(index) {
-    selectedIndex = index;
-    swatch.style.background = PICKER_COLORS[index % PICKER_COLORS.length];
-    label.textContent = items[index].label;
-    options.forEach((option, i) => option.setAttribute("aria-selected", String(i === index)));
-    picker.open = false;
+function createDestinationSelect(items, valueField, labelField, className, accessibleName) {
+  const select = element("select", "", `destination-select ${className}`);
+  select.setAttribute("aria-label", accessibleName);
+  for (const item of items) {
+    const option = element("option", item[labelField]);
+    option.value = item[valueField];
+    option.selected = Boolean(item.is_default);
+    select.append(option);
   }
-  select(selectedIndex);
-  picker.append(summary, list);
-  Object.defineProperty(picker, "value", {get: () => items[selectedIndex].value});
-  return picker;
+  return select;
 }
 
 function renderNote(note, hideTitle) {
@@ -409,19 +386,13 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
     };
     buttons.append(transcriptButton);
     const lists = clickup?.lists || [];
-    let picker = null;
-    if (lists.length > 1) {
-      picker = createOptionPicker(
-        lists.map((item) => ({value: item.list_id, label: item.list_name, selected: item.is_default})),
-        "clickup-picker",
-      );
-      picker.dataset.clickup = "true";
-      picker.hidden = true;
-      actionButtons.append(picker);
-    }
+    const clickupActions = element("div", "", "export-destination");
+    clickupActions.dataset.clickup = "true";
+    clickupActions.hidden = true;
+    const clickupSelect = createDestinationSelect(
+      lists, "list_id", "list_name", "clickup-picker", "ClickUp List",
+    );
     const clickupButton = element("button", "", "clickup-button send-button");
-    clickupButton.dataset.clickup = "true";
-    clickupButton.hidden = true;
     const clickupIcon = document.createElement("img");
     clickupIcon.src = "/static/clickup.svg";
     clickupIcon.alt = "";
@@ -431,27 +402,22 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
     clickupButton.onclick = async () => {
       clickupButton.disabled = true;
       try {
-        const body = {provider: selected, ...(picker ? {list_id: picker.value} : {})};
+        const body = {provider: selected, list_id: clickupSelect.value};
         const result = await api(`/api/meetings/${meeting.id}/clickup`, body);
         clickupLabel.textContent = result.created ? `${result.created} task${result.created === 1 ? "" : "s"} sent` : "Already sent";
       } catch (error) { showError(error.message); clickupButton.disabled = false; }
     };
-    actionButtons.append(clickupButton);
+    clickupActions.append(clickupSelect, clickupButton);
+    actionButtons.append(clickupActions);
 
     const plans = planner?.plans || [];
-    let plannerPicker = null;
-    if (plans.length > 1) {
-      plannerPicker = createOptionPicker(
-        plans.map((item) => ({value: item.plan_id, label: item.plan_name, selected: item.is_default})),
-        "planner-picker",
-      );
-      plannerPicker.dataset.planner = "true";
-      plannerPicker.hidden = true;
-      actionButtons.append(plannerPicker);
-    }
+    const plannerActions = element("div", "", "export-destination");
+    plannerActions.dataset.planner = "true";
+    plannerActions.hidden = true;
+    const plannerSelect = createDestinationSelect(
+      plans, "plan_id", "plan_name", "planner-picker", "Microsoft Planner plan",
+    );
     const plannerButton = element("button", "", "clickup-button send-button");
-    plannerButton.dataset.planner = "true";
-    plannerButton.hidden = true;
     const plannerIcon = document.createElement("img");
     plannerIcon.src = "/static/planner.svg";
     plannerIcon.alt = "";
@@ -461,32 +427,25 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
     plannerButton.onclick = async () => {
       plannerButton.disabled = true;
       try {
-        const body = {provider: selected, ...(plannerPicker ? {plan_id: plannerPicker.value} : {})};
+        const body = {provider: selected, plan_id: plannerSelect.value};
         const result = await api(`/api/meetings/${meeting.id}/planner`, body);
         plannerLabel.textContent = result.created ? `${result.created} task${result.created === 1 ? "" : "s"} sent` : "Already sent";
       } catch (error) { showError(error.message); plannerButton.disabled = false; }
     };
-    actionButtons.append(plannerButton);
+    plannerActions.append(plannerSelect, plannerButton);
+    actionButtons.append(plannerActions);
 
     // Export only ever sends whichever provider's items are on screen right
     // now, so the count on the button always matches what was just clicked.
     function updateExportVisibility() {
       const hasActions = hasActionItems(meeting.content, selected);
       const clickupVisible = lists.length > 0 && hasActions;
-      clickupButton.dataset.hasActions = String(clickupVisible);
-      clickupButton.hidden = !clickupVisible;
-      if (picker) {
-        picker.dataset.hasActions = String(clickupVisible);
-        picker.hidden = !clickupVisible;
-      }
+      clickupActions.dataset.hasActions = String(clickupVisible);
+      clickupActions.hidden = !clickupVisible;
       clickupLabel.textContent = clickupDefaultLabel;
       const plannerVisible = plans.length > 0 && hasActions;
-      plannerButton.dataset.hasActions = String(plannerVisible);
-      plannerButton.hidden = !plannerVisible;
-      if (plannerPicker) {
-        plannerPicker.dataset.hasActions = String(plannerVisible);
-        plannerPicker.hidden = !plannerVisible;
-      }
+      plannerActions.dataset.hasActions = String(plannerVisible);
+      plannerActions.hidden = !plannerVisible;
       plannerLabel.textContent = plannerDefaultLabel;
     }
     updateExportVisibility();
@@ -508,10 +467,7 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
         article.append(section);
       }
       const exportActions = element("div", "", "buttons action-buttons");
-      if (picker) exportActions.append(picker);
-      exportActions.append(clickupButton);
-      if (plannerPicker) exportActions.append(plannerPicker);
-      exportActions.append(plannerButton);
+      exportActions.append(clickupActions, plannerActions);
       if (lists.length || plans.length) article.append(exportActions);
       if (!lists.length && !plans.length) article.append(element("p", "Connect ClickUp or add a Microsoft Planner plan in Account settings to create tasks.", "hint"));
       target.append(article);
