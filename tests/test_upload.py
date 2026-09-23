@@ -26,9 +26,7 @@ class FakeRouter:
 
 
 @pytest.mark.parametrize("filename", ["notes.txt", "notes.vtt", "notes.srt", "teams.docx"])
-def test_upload_saved_and_excluded_from_graph(
-    monkeypatch, client, store, signed_in, filename
-):
+def test_upload_saved_and_excluded_from_graph(monkeypatch, client, store, signed_in, filename):
     enable(monkeypatch)
     monkeypatch.setattr("app.web.OpenRouter", FakeRouter)
     response = client.post(
@@ -54,9 +52,7 @@ def test_upload_requires_auth(client):
     assert client.post("/api/transcripts/upload", json={}).status_code == 401
 
 
-def test_docx_upload_accepts_60000_extracted_characters(
-    monkeypatch, client, signed_in
-):
+def test_docx_upload_accepts_60000_extracted_characters(monkeypatch, client, signed_in):
     enable(monkeypatch)
 
     class LimitRouter:
