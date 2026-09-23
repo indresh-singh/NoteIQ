@@ -19,6 +19,8 @@ Open **Microsoft Entra ID → App registrations → note-iq**.
 | Application | `OnlineMeetingAiInsight.Read.All` | Copilot insights and notifications |
 | Application | `OnlineMeetings.Read.All` | Meeting title and organizer check |
 | Application | `OnlineMeetingTranscript.Read.All` | Transcript notifications and content |
+| Application | `Tasks.ReadWrite.All` | Microsoft Planner integration — optional, see [docs/planner.md](planner.md) |
+| Application | `GroupMember.Read.All` | Scoping Planner plan discovery to the signed-in user's own groups — optional, see [docs/planner.md](planner.md) |
 
 Click **Grant admin consent** and confirm all required entries show consent granted. Transcript collection requires the application transcript permission above. For Teams Activity notifications, install the updated package using [these setup steps](transcripts-and-messages.md). You do not need to configure **Expose an API** for this popup-based version.
 

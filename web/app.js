@@ -175,8 +175,9 @@ function providerLabel(provider) {
   return "Microsoft 365 Copilot";
 }
 
-function renderMeetings(meetings, clickup, summaryProvider, custom = false) {
-  const signature = JSON.stringify(meetings) + summaryProvider + JSON.stringify(clickup);
+function renderMeetings(meetings, clickup, planner, summaryProvider, custom = false) {
+  const signature =
+    JSON.stringify(meetings) + summaryProvider + JSON.stringify(clickup) + JSON.stringify(planner);
   if (signature === (custom ? previousUploads : previousMeetings)) return;
   if (custom) previousUploads = signature;
   else previousMeetings = signature;
@@ -372,18 +373,6 @@ function renderMeetings(meetings, clickup, summaryProvider, custom = false) {
     const clickupDefaultLabel = "Send action items to ClickUp";
     const clickupLabel = element("span", clickupDefaultLabel);
     clickupButton.append(clickupIcon, clickupLabel);
-    // Export only ever sends whichever provider's items are on screen right
-    // now, so the count on the button always matches what was just clicked.
-    function updateExportVisibility() {
-      const visible = lists.length > 0 && hasActionItems(meeting.content, selected);
-      clickupButton.dataset.hasActions = String(visible);
-      clickupButton.hidden = !visible;
-      if (picker) {
-        picker.dataset.hasActions = String(visible);
-        picker.hidden = !visible;
-      }
-      clickupLabel.textContent = clickupDefaultLabel;
-    }
     clickupButton.onclick = async () => {
       clickupButton.disabled = true;
       try {
@@ -393,6 +382,55 @@ function renderMeetings(meetings, clickup, summaryProvider, custom = false) {
       } catch (error) { showError(error.message); clickupButton.disabled = false; }
     };
     buttons.append(clickupButton);
+
+    const plans = planner?.plans || [];
+    let plannerPicker = null;
+    if (plans.length > 1) {
+      plannerPicker = element("select", "", "clickup-list-picker");
+      plannerPicker.dataset.planner = "true";
+      plannerPicker.hidden = true;
+      for (const item of plans) {
+        const option = element("option", item.plan_name);
+        option.value = item.plan_id;
+        option.selected = item.is_default;
+        plannerPicker.append(option);
+      }
+      buttons.append(plannerPicker);
+    }
+    const plannerButton = element("button", "Send action items to Planner", "clickup-button");
+    plannerButton.dataset.planner = "true";
+    plannerButton.hidden = true;
+    plannerButton.onclick = async () => {
+      plannerButton.disabled = true;
+      try {
+        const body = {provider: selected, ...(plannerPicker ? {plan_id: plannerPicker.value} : {})};
+        const result = await api(`/api/meetings/${meeting.id}/planner`, body);
+        plannerButton.textContent = result.created ? `${result.created} task${result.created === 1 ? "" : "s"} sent` : "Already sent";
+      } catch (error) { showError(error.message); plannerButton.disabled = false; }
+    };
+    buttons.append(plannerButton);
+
+    // Export only ever sends whichever provider's items are on screen right
+    // now, so the count on the button always matches what was just clicked.
+    function updateExportVisibility() {
+      const hasActions = hasActionItems(meeting.content, selected);
+      const clickupVisible = lists.length > 0 && hasActions;
+      clickupButton.dataset.hasActions = String(clickupVisible);
+      clickupButton.hidden = !clickupVisible;
+      if (picker) {
+        picker.dataset.hasActions = String(clickupVisible);
+        picker.hidden = !clickupVisible;
+      }
+      clickupLabel.textContent = clickupDefaultLabel;
+      const plannerVisible = plans.length > 0 && hasActions;
+      plannerButton.dataset.hasActions = String(plannerVisible);
+      plannerButton.hidden = !plannerVisible;
+      if (plannerPicker) {
+        plannerPicker.dataset.hasActions = String(plannerVisible);
+        plannerPicker.hidden = !plannerVisible;
+      }
+      plannerButton.textContent = "Send action items to Planner";
+    }
     updateExportVisibility();
     if (custom) {
       article.replaceChildren(element("h2", "Here's your meeting insights"), element("p", meeting.subject, "hint"));
@@ -414,8 +452,10 @@ function renderMeetings(meetings, clickup, summaryProvider, custom = false) {
       const exportActions = element("div", "", "buttons");
       if (picker) exportActions.append(picker);
       exportActions.append(clickupButton);
+      if (plannerPicker) exportActions.append(plannerPicker);
+      exportActions.append(plannerButton);
       article.append(exportActions);
-      if (!lists.length) article.append(element("p", "Connect ClickUp and choose a List in Account settings to create tasks.", "hint"));
+      if (!lists.length && !plans.length) article.append(element("p", "Connect ClickUp or add a Microsoft Planner plan in Account settings to create tasks.", "hint"));
       target.append(article);
       continue;
     }
@@ -431,7 +471,7 @@ function renderMeetings(meetings, clickup, summaryProvider, custom = false) {
     const goToPage = (page) => {
       meetingsPage = page;
       previousMeetings = ""; // force a rebuild even though the data hasn't changed
-      renderMeetings(meetings, clickup, aiProvider);
+      renderMeetings(meetings, clickup, planner, summaryProvider);
     };
     const previous = element("button", "Previous");
     previous.type = "button";
@@ -539,6 +579,120 @@ function renderClickUp(clickup) {
   });
 }
 
+let availablePlannerPlans = null;
+let availablePlannerPlansFailed = false;
+let loadingAvailablePlannerPlans = false;
+
+async function ensureAvailablePlannerPlans(force = false) {
+  if (loadingAvailablePlannerPlans || (availablePlannerPlans !== null && !force)) return;
+  loadingAvailablePlannerPlans = true;
+  try {
+    availablePlannerPlans = (await api("/api/planner/available-plans")).plans;
+    availablePlannerPlansFailed = false;
+  } catch (error) {
+    availablePlannerPlans = [];
+    availablePlannerPlansFailed = true;
+    // Planner has no on/off switch to gate this on, so this call now fires
+    // for every signed-in user, not just ones who opted in. A tenant that
+    // hasn't granted the Planner Graph permissions yet would otherwise show
+    // every user an error banner just for opening Account settings; only an
+    // explicit "Refresh" click (force=true) surfaces one.
+    if (force) showError(error.message);
+  } finally {
+    loadingAvailablePlannerPlans = false;
+    renderPlannerPicker();
+  }
+}
+
+function renderPlannerPicker() {
+  const select = $("#planner-plan-id");
+  if (!select) return;
+  const addedIds = new Set((currentPlanner?.plans || []).map((item) => item.plan_id));
+  const options = (availablePlannerPlans || []).filter((item) => !addedIds.has(item.id));
+  select.replaceChildren();
+  select.disabled = true;
+  if (availablePlannerPlans === null) {
+    select.append(new Option("Loading Planner plans…", ""));
+  } else if (availablePlannerPlansFailed) {
+    select.append(new Option("Couldn't load plans. Click Refresh to try again.", ""));
+  } else if (!options.length) {
+    select.append(new Option("No more plans to add", ""));
+  } else {
+    select.disabled = false;
+    for (const item of options) select.append(new Option(`${item.path} / ${item.name}`, item.id));
+  }
+  $("#planner-add-plan button[type=submit]").disabled = select.disabled;
+}
+
+async function refreshPlannerTasks() {
+  const listing = $("#planner-tasks");
+  const empty = $("#planner-tasks-empty");
+  if (!currentPlanner?.plan_id) return;
+  try {
+    const {tasks} = await api(`/api/planner/tasks?plan_id=${encodeURIComponent(currentPlanner.plan_id)}`);
+    listing.replaceChildren();
+    empty.hidden = tasks.length > 0;
+    for (const task of tasks) {
+      const row = element("li", "", "clickup-list-row");
+      row.append(element("span", task.title || "Untitled task", "clickup-list-name"));
+      const detail = [task.bucket_name, task.percent_complete ? `${task.percent_complete}% complete` : "Not started", task.due_date ? `Due ${new Date(task.due_date).toLocaleDateString()}` : ""].filter(Boolean).join(" · ");
+      if (detail) row.append(element("span", detail, "hint"));
+      listing.append(row);
+    }
+  } catch (error) { showError(error.message); }
+}
+
+let currentPlanner = null;
+
+function renderPlanner(planner) {
+  currentPlanner = planner;
+  $("#planner-settings").hidden = false;
+  const plans = planner.plans || [];
+  $("#planner-plans-wrap").hidden = false;
+  ensureAvailablePlannerPlans();
+  renderPlannerPicker();
+  $("#planner-status").textContent = !plans.length
+    ? "Add a Planner plan below to start sending action items."
+    : planner.plan_id
+    ? `New tasks go to "${planner.plan_name}" by default.`
+    : "Choose a default Planner plan below.";
+  const listing = $("#planner-plans");
+  listing.replaceChildren();
+  for (const item of plans) {
+    const row = element("li", "", "clickup-list-row");
+    row.append(element("span", item.plan_name, "clickup-list-name"));
+    if (item.is_default) {
+      row.append(element("span", "Default", "clickup-list-badge"));
+    } else {
+      const makeDefault = element("button", "Set default");
+      makeDefault.onclick = async () => {
+        makeDefault.disabled = true;
+        try { await api("/api/planner/plans/default", {plan_id: item.plan_id}); await refresh(); }
+        catch (error) { showError(error.message); makeDefault.disabled = false; }
+      };
+      row.append(makeDefault);
+    }
+    const remove = element("button", "Remove", "clickup-list-remove");
+    remove.onclick = async () => {
+      remove.disabled = true;
+      try {
+        const response = await fetch(`/api/planner/plans/${item.plan_id}`, {
+          method: "DELETE",
+          headers: {Authorization: `Bearer ${token}`},
+        });
+        if (!response.ok) throw new Error("Couldn't remove that Planner plan. Try again.");
+        await refresh();
+      } catch (error) { showError(error.message); remove.disabled = false; }
+    };
+    row.append(remove);
+    listing.append(row);
+  }
+  $("#planner-tasks-wrap").hidden = !planner.plan_id;
+  document.querySelectorAll("[data-planner]").forEach((field) => {
+    field.hidden = !plans.length || field.dataset.hasActions !== "true";
+  });
+}
+
 $("#clickup-shortcut").onclick = () => {
   const settings = $(".account");
   settings.open = true;
@@ -577,8 +731,10 @@ async function refresh(sync = false) {
         : "Checked Microsoft 365 just now. You're all caught up.";
       if (result.queued) chaseResults();
     }
-    const [meetings, clickup] = await Promise.all([api("/api/meetings"), api("/api/clickup")]);
-    const clickupSignature = JSON.stringify(clickup);
+    const [meetings, clickup, planner] = await Promise.all([
+      api("/api/meetings"), api("/api/clickup"), api("/api/planner"),
+    ]);
+    const clickupSignature = JSON.stringify(clickup) + JSON.stringify(planner);
     if (clickupSignature !== previousClickUp) previousMeetings = "";
     previousClickUp = clickupSignature;
     if (token !== startedWith) return;
@@ -594,9 +750,10 @@ async function refresh(sync = false) {
       : "NoteIQ will notify you once in Teams Activity when a meeting's AI insights are ready.";
     $("#notification-retry").hidden = !notificationError;
     $("#retry").hidden = !["ACCESS_REQUIRED", "CONNECTION_ERROR"].includes(user.status);
-    renderMeetings(meetings.filter((m) => m.content.source !== "upload"), clickup, user.summary_provider);
-    renderMeetings(meetings.filter((m) => m.content.source === "upload").slice(0, 1), clickup, user.summary_provider, true);
+    renderMeetings(meetings.filter((m) => m.content.source !== "upload"), clickup, planner, user.summary_provider);
+    renderMeetings(meetings.filter((m) => m.content.source === "upload").slice(0, 1), clickup, planner, user.summary_provider, true);
     renderClickUp(clickup);
+    renderPlanner(planner);
     showError();
   } catch (error) { showError(error.message); }
   finally { loading = false; $("#refresh").disabled = false; $("#refresh").textContent = "Refresh"; }
@@ -657,6 +814,32 @@ $("#clickup-refresh-lists").onclick = async () => {
 $("#clickup-disconnect").onclick = async () => {
   try { await api("/api/clickup/disconnect", {}); await refresh(); }
   catch (error) { showError(error.message); }
+};
+$("#planner-add-plan").onsubmit = async (event) => {
+  event.preventDefault();
+  const button = event.submitter;
+  const original = button.textContent;
+  button.disabled = true;
+  try {
+    await api("/api/planner/plans", {plan_id: $("#planner-plan-id").value});
+    $("#planner-plan-id").value = "";
+    await refresh();
+    button.textContent = "Added";
+    setTimeout(() => { button.textContent = original; }, 1500);
+  } catch (error) { showError(error.message); }
+  finally { button.disabled = false; }
+};
+$("#planner-refresh-plans").onclick = async () => {
+  const button = $("#planner-refresh-plans");
+  button.disabled = true;
+  await ensureAvailablePlannerPlans(true);
+  button.disabled = false;
+};
+$("#planner-refresh-tasks").onclick = async () => {
+  const button = $("#planner-refresh-tasks");
+  button.disabled = true;
+  await refreshPlannerTasks();
+  button.disabled = false;
 };
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 window.addEventListener("focus", () => refresh());

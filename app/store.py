@@ -426,6 +426,20 @@ class Store:
                     user_id TEXT NOT NULL, action_key TEXT NOT NULL, task_id TEXT NOT NULL,
                     task_url TEXT, PRIMARY KEY (user_id, action_key)
                 );
+                -- No OAuth token here, unlike clickup_connections: Planner is reached with the
+                -- same app-only Graph credentials as everything else, so this table only
+                -- remembers which plan is the default export target.
+                CREATE TABLE IF NOT EXISTS planner_defaults (
+                    user_id TEXT PRIMARY KEY, plan_id TEXT, plan_name TEXT
+                );
+                CREATE TABLE IF NOT EXISTS planner_plans (
+                    user_id TEXT NOT NULL, plan_id TEXT NOT NULL, plan_name TEXT NOT NULL,
+                    PRIMARY KEY (user_id, plan_id)
+                );
+                CREATE TABLE IF NOT EXISTS planner_tasks (
+                    user_id TEXT NOT NULL, action_key TEXT NOT NULL, task_id TEXT NOT NULL,
+                    task_url TEXT, PRIMARY KEY (user_id, action_key)
+                );
                 -- Retire delegated chat credentials and pending sends from the prior prototype.
                 DROP TABLE IF EXISTS chat_connections;
                 DROP TABLE IF EXISTS outbox;
@@ -502,6 +516,14 @@ class Store:
                 user_id TEXT NOT NULL, list_id TEXT NOT NULL, list_name TEXT NOT NULL,
                 PRIMARY KEY (user_id, list_id))""",
             """CREATE TABLE IF NOT EXISTS clickup_tasks (
+                user_id TEXT NOT NULL, action_key TEXT NOT NULL, task_id TEXT NOT NULL,
+                task_url TEXT, PRIMARY KEY (user_id, action_key))""",
+            """CREATE TABLE IF NOT EXISTS planner_defaults (
+                user_id TEXT PRIMARY KEY, plan_id TEXT, plan_name TEXT)""",
+            """CREATE TABLE IF NOT EXISTS planner_plans (
+                user_id TEXT NOT NULL, plan_id TEXT NOT NULL, plan_name TEXT NOT NULL,
+                PRIMARY KEY (user_id, plan_id))""",
+            """CREATE TABLE IF NOT EXISTS planner_tasks (
                 user_id TEXT NOT NULL, action_key TEXT NOT NULL, task_id TEXT NOT NULL,
                 task_url TEXT, PRIMARY KEY (user_id, action_key))""",
             "DROP TABLE IF EXISTS chat_connections",
@@ -709,6 +731,9 @@ class Store:
             db.execute("DELETE FROM clickup_connections WHERE user_id=?", (user_id,))
             db.execute("DELETE FROM clickup_lists WHERE user_id=?", (user_id,))
             db.execute("DELETE FROM clickup_tasks WHERE user_id=?", (user_id,))
+            db.execute("DELETE FROM planner_defaults WHERE user_id=?", (user_id,))
+            db.execute("DELETE FROM planner_plans WHERE user_id=?", (user_id,))
+            db.execute("DELETE FROM planner_tasks WHERE user_id=?", (user_id,))
 
     def reconcile_subscriptions(self, rows: list[tuple[str, str, str, float]]):
         """Mirror Graph's own subscription list into the local table.
@@ -815,66 +840,144 @@ class Store:
                 (user_id, list_id),
             )
 
-    def clickup_task_id(self, user_id: str, action_key: str) -> str | None:
-        """Return the ClickUp task id previously recorded for this action item, if any."""
+    # Shared by every export target's task table (currently clickup_tasks and
+    # planner_tasks): both need exactly the same "have I already sent this
+    # action item?" bookkeeping, so the logic lives once and each provider
+    # gets thin, differently-named wrappers below. `table` is always one of
+    # our own hardcoded names, never user input, so interpolating it is safe.
+    def _export_task_id(self, table: str, user_id: str, action_key: str) -> str | None:
         with self.connect() as db:
             row = db.execute(
-                "SELECT task_id FROM clickup_tasks WHERE user_id=? AND action_key=?",
+                f"SELECT task_id FROM {table} WHERE user_id=? AND action_key=?",
                 (user_id, action_key),
             ).fetchone()
         return row["task_id"] if row and row["task_id"] else None
 
-    def forget_clickup_task(self, user_id: str, action_key: str):
-        """Drop a stale record so a deleted-in-ClickUp task can be re-exported."""
+    def _forget_export_task(self, table: str, user_id: str, action_key: str):
+        """Drop a stale record so a task deleted on the provider's side can be re-exported."""
         with self.connect() as db:
             db.execute(
-                "DELETE FROM clickup_tasks WHERE user_id=? AND action_key=?",
-                (user_id, action_key),
+                f"DELETE FROM {table} WHERE user_id=? AND action_key=?", (user_id, action_key)
             )
 
-    def reserve_clickup_task(self, user_id: str, action_key: str) -> bool:
-        """Atomically claim an action item before calling the ClickUp API.
+    def _reserve_export_task(self, table: str, user_id: str, action_key: str) -> bool:
+        """Atomically claim an action item before calling the provider's API.
 
         The check-then-act window between "was this already sent?" and the
         network call to create the task is otherwise wide enough for
         concurrent export requests to both pass the check and both create a
-        duplicate task in the user's ClickUp workspace. Reserving the row
-        first, inside a single statement, closes that window: only one
-        concurrent caller can win the insert. Returns True if this call
-        claimed it and should proceed to create the task; False if another
-        call already claimed (or completed) it.
+        duplicate task. Reserving the row first, inside a single statement,
+        closes that window: only one concurrent caller can win the insert.
+        Returns True if this call claimed it and should proceed to create the
+        task; False if another call already claimed (or completed) it.
         """
         with self.connect() as db:
             if self.database_url:
                 # ON CONFLICT must precede RETURNING; the generic "INSERT OR IGNORE"
                 # translation appends ON CONFLICT at the end, which is invalid here.
                 row = db.execute(
-                    "INSERT INTO clickup_tasks(user_id, action_key, task_id) VALUES (?, ?, '') "
+                    f"INSERT INTO {table}(user_id, action_key, task_id) VALUES (?, ?, '') "
                     "ON CONFLICT DO NOTHING RETURNING 1",
                     (user_id, action_key),
                 ).fetchone()
             else:
                 row = db.execute(
-                    "INSERT OR IGNORE INTO clickup_tasks(user_id, action_key, task_id) "
+                    f"INSERT OR IGNORE INTO {table}(user_id, action_key, task_id) "
                     "VALUES (?, ?, '') RETURNING 1",
                     (user_id, action_key),
                 ).fetchone()
         return row is not None
 
-    def release_clickup_task(self, user_id: str, action_key: str):
-        """Undo a reservation whose ClickUp API call failed, so a retry isn't
+    def _release_export_task(self, table: str, user_id: str, action_key: str):
+        """Undo a reservation whose API call failed, so a retry isn't
         permanently skipped as "already sent"."""
         with self.connect() as db:
             db.execute(
-                "DELETE FROM clickup_tasks WHERE user_id=? AND action_key=? AND task_id=''",
+                f"DELETE FROM {table} WHERE user_id=? AND action_key=? AND task_id=''",
                 (user_id, action_key),
             )
 
-    def save_clickup_task(self, user_id: str, action_key: str, task: dict):
+    def _save_export_task(self, table: str, user_id: str, action_key: str, task: dict):
         with self.connect() as db:
             db.execute(
-                "UPDATE clickup_tasks SET task_id=?, task_url=? WHERE user_id=? AND action_key=?",
+                f"UPDATE {table} SET task_id=?, task_url=? WHERE user_id=? AND action_key=?",
                 (str(task["id"]), task.get("url"), user_id, action_key),
+            )
+
+    def clickup_task_id(self, user_id: str, action_key: str) -> str | None:
+        return self._export_task_id("clickup_tasks", user_id, action_key)
+
+    def forget_clickup_task(self, user_id: str, action_key: str):
+        self._forget_export_task("clickup_tasks", user_id, action_key)
+
+    def reserve_clickup_task(self, user_id: str, action_key: str) -> bool:
+        return self._reserve_export_task("clickup_tasks", user_id, action_key)
+
+    def release_clickup_task(self, user_id: str, action_key: str):
+        self._release_export_task("clickup_tasks", user_id, action_key)
+
+    def save_clickup_task(self, user_id: str, action_key: str, task: dict):
+        self._save_export_task("clickup_tasks", user_id, action_key, task)
+
+    def planner_task_id(self, user_id: str, action_key: str) -> str | None:
+        return self._export_task_id("planner_tasks", user_id, action_key)
+
+    def forget_planner_task(self, user_id: str, action_key: str):
+        self._forget_export_task("planner_tasks", user_id, action_key)
+
+    def reserve_planner_task(self, user_id: str, action_key: str) -> bool:
+        return self._reserve_export_task("planner_tasks", user_id, action_key)
+
+    def release_planner_task(self, user_id: str, action_key: str):
+        self._release_export_task("planner_tasks", user_id, action_key)
+
+    def save_planner_task(self, user_id: str, action_key: str, task: dict):
+        self._save_export_task("planner_tasks", user_id, action_key, task)
+
+    def planner_default(self, user_id: str) -> dict | None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT plan_id, plan_name FROM planner_defaults WHERE user_id=?", (user_id,)
+            ).fetchone()
+        return dict(row) if row and row["plan_id"] else None
+
+    def set_planner_default(self, user_id: str, plan_id: str, plan_name: str):
+        with self.connect() as db:
+            db.execute(
+                """INSERT INTO planner_defaults(user_id, plan_id, plan_name) VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    plan_id=excluded.plan_id, plan_name=excluded.plan_name""",
+                (user_id, plan_id, plan_name),
+            )
+
+    def add_planner_plan(self, user_id: str, plan_id: str, plan_name: str):
+        with self.connect() as db:
+            db.execute(
+                """INSERT INTO planner_plans(user_id, plan_id, plan_name) VALUES (?, ?, ?)
+                ON CONFLICT(user_id, plan_id) DO UPDATE SET plan_name=excluded.plan_name""",
+                (user_id, plan_id, plan_name),
+            )
+
+    def planner_plans(self, user_id: str) -> list[dict]:
+        with self.connect() as db:
+            return [
+                dict(row)
+                for row in db.execute(
+                    "SELECT plan_id, plan_name FROM planner_plans WHERE user_id=? "
+                    "ORDER BY plan_name",
+                    (user_id,),
+                ).fetchall()
+            ]
+
+    def remove_planner_plan(self, user_id: str, plan_id: str):
+        with self.connect() as db:
+            db.execute(
+                "DELETE FROM planner_plans WHERE user_id=? AND plan_id=?", (user_id, plan_id)
+            )
+            db.execute(
+                "UPDATE planner_defaults SET plan_id=NULL, plan_name=NULL "
+                "WHERE user_id=? AND plan_id=?",
+                (user_id, plan_id),
             )
 
     def enqueue(self, payloads: list[str]):

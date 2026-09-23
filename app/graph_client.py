@@ -44,6 +44,12 @@ def safe_graph_url(url: str) -> str:
         lambda match: tagged("subscription", match.group()),
         value,
     )
+    value = re.sub(r"(?<=/groups/)[^/]+", lambda match: tagged("group", match.group()), value)
+    value = re.sub(r"(?<=/planner/plans/)[^/]+", lambda match: tagged("plan", match.group()), value)
+    value = re.sub(r"(?<=/planner/tasks/)[^/]+", lambda match: tagged("task", match.group()), value)
+    value = re.sub(
+        r"(?<=/planner/buckets/)[^/]+", lambda match: tagged("bucket", match.group()), value
+    )
     # The organizer ID is repeated inside this OData function's path segment.
     value = re.sub(r"getAllTranscripts\([^)]*\)", "getAllTranscripts(<parameters>)", value)
     return value
