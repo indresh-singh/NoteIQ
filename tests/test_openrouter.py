@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from app.config import settings
-from app.openrouter import FALLBACK_MODEL, FREE_ROUTER_MODEL, OpenRouter, extract_json_object
+from app.openrouter import FREE_ROUTER_MODEL, OpenRouter, extract_json_object
 
 
 def mock_client(monkeypatch, handle):
@@ -182,27 +182,6 @@ async def test_summarize_asks_the_model_to_disable_reasoning(monkeypatch):
     assert payloads[0]["reasoning"] == {"enabled": False}
 
 
-async def test_summarize_disables_streaming_for_the_nvidia_fallback_model(monkeypatch):
-    enable_openrouter(monkeypatch)
-    payloads = []
-
-    def handle(request):
-        body = json.loads(request.read())
-        payloads.append(body)
-        if body["model"] == "test/model":
-            return httpx.Response(429)
-        return httpx.Response(
-            200,
-            json={"choices": [{"message": {"content": '{"meetingNotes": [], "actionItems": []}'}}]},
-        )
-
-    mock_client(monkeypatch, handle)
-    await OpenRouter(settings()).summarize("transcript-1", "Budget review", "hello")
-    assert "stream" not in payloads[0]
-    assert payloads[1]["model"] == FALLBACK_MODEL
-    assert payloads[1]["stream"] is False
-
-
 async def test_summarize_falls_back_to_reasoning_field_when_content_is_empty(monkeypatch):
     enable_openrouter(monkeypatch)
 
@@ -303,36 +282,8 @@ async def test_summarize_falls_back_when_primary_model_is_rate_limited(monkeypat
 
     mock_client(monkeypatch, handle)
     insight = await OpenRouter(settings()).summarize("transcript-1", "Budget review", "hello")
-    assert requested_models == ["test/model", FALLBACK_MODEL]
+    assert requested_models == ["test/model", FREE_ROUTER_MODEL]
     assert insight.meetingNotes[0].text == "From fallback."
-
-
-async def test_summarize_falls_back_to_the_free_router_when_both_models_fail(monkeypatch):
-    enable_openrouter(monkeypatch)
-    requested_models = []
-
-    def handle(request):
-        model = json.loads(request.read())["model"]
-        requested_models.append(model)
-        if model != FREE_ROUTER_MODEL:
-            return httpx.Response(429)
-        return httpx.Response(
-            200,
-            json={
-                "choices": [
-                    {
-                        "message": {
-                            "content": '{"meetingNotes": [{"text": "From the free router."}], "actionItems": []}'
-                        }
-                    }
-                ]
-            },
-        )
-
-    mock_client(monkeypatch, handle)
-    insight = await OpenRouter(settings()).summarize("transcript-1", "Budget review", "hello")
-    assert requested_models == ["test/model", FALLBACK_MODEL, FREE_ROUTER_MODEL]
-    assert insight.meetingNotes[0].text == "From the free router."
 
 
 async def test_summarize_does_not_fall_back_on_rejected_api_key(monkeypatch):
@@ -360,11 +311,11 @@ async def test_summarize_raises_final_error_when_the_whole_chain_fails(monkeypat
         await OpenRouter(settings()).summarize("transcript-1", "Budget review", "hello")
 
 
-async def test_summarize_does_not_duplicate_a_model_already_in_the_fallback_chain(
+async def test_summarize_does_not_duplicate_the_free_router_when_configured(
     monkeypatch,
 ):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
-    monkeypatch.setenv("OPENROUTER_MODEL", FALLBACK_MODEL)
+    monkeypatch.setenv("OPENROUTER_MODEL", FREE_ROUTER_MODEL)
     settings.cache_clear()
     requested_models = []
 
@@ -375,4 +326,4 @@ async def test_summarize_does_not_duplicate_a_model_already_in_the_fallback_chai
     mock_client(monkeypatch, handle)
     with pytest.raises(ValueError, match="rate-limited"):
         await OpenRouter(settings()).summarize("transcript-1", "Budget review", "hello")
-    assert requested_models == [FALLBACK_MODEL, FREE_ROUTER_MODEL]
+    assert requested_models == [FREE_ROUTER_MODEL]

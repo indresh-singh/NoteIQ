@@ -29,11 +29,7 @@ log = logging.getLogger(__name__)
 API = "https://openrouter.ai/api/v1/chat/completions"
 MAX_TRANSCRIPT_CHARS = 60_000
 JSON_OBJECT_PATTERN = re.compile(r"\{.*\}", re.DOTALL)
-# Used when the configured model fails (rate limit, outage, bad output) — a free
-# model on a different upstream provider, so it draws from a separate quota.
-FALLBACK_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
-# Last resort: OpenRouter's own router that picks a healthy free model at
-# request time, so it isn't tied to any single model's quota at all.
+# OpenRouter's own router picks a healthy free model at request time.
 FREE_ROUTER_MODEL = "openrouter/free"
 
 
@@ -68,9 +64,8 @@ class OpenRouter:
     async def summarize(self, key: str, subject: str, transcript_text: str) -> Insight:
         text = transcript_text[:MAX_TRANSCRIPT_CHARS]
         models = [self.config.openrouter_model]
-        for candidate in (FALLBACK_MODEL, FREE_ROUTER_MODEL):
-            if candidate not in models:
-                models.append(candidate)
+        if FREE_ROUTER_MODEL not in models:
+            models.append(FREE_ROUTER_MODEL)
         error: ValueError | None = None
         for position, model in enumerate(models):
             try:
@@ -102,11 +97,6 @@ class OpenRouter:
             # ignores the request (some reasoning-mandatory models do).
             "reasoning": {"enabled": False},
         }
-        if model == FALLBACK_MODEL:
-            # We need the full response in one piece to parse it as JSON, and
-            # streaming is opt-in on OpenRouter anyway; being explicit here
-            # avoids any provider-side default that might stream regardless.
-            payload["stream"] = False
         started = time.monotonic()
         log.info(
             "OpenRouter summary started model=%s transcript_chars=%s subject_chars=%s",
