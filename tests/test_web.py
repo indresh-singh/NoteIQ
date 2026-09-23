@@ -202,6 +202,7 @@ def test_page_and_static_assets_are_public_but_data_is_protected(client, config)
     assert page.headers["cache-control"] == "no-store"
     assert client.get("/static/vendor/teams.min.js").status_code == 200
     assert client.get("/static/vendor/adaptivecards.min.js").status_code == 200
+    assert client.get("/static/vendor/mammoth.browser.min.js").status_code == 200
     assert client.get("/static/../.env").status_code == 404
     assert client.get("/api/messages").status_code == 404
     assert client.get("/api/me").status_code == 401

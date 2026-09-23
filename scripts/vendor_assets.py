@@ -13,6 +13,7 @@ from app.config import ROOT
 PACKAGES = [
     ("@microsoft/teams-js", "2.56.0", "MicrosoftTeams.min.js", "teams.min.js"),
     ("adaptivecards", "3.0.6", "adaptivecards.min.js", "adaptivecards.min.js"),
+    ("mammoth", "1.12.3", "mammoth.browser.min.js", "mammoth.browser.min.js"),
 ]
 
 

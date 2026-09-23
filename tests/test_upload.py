@@ -1,3 +1,5 @@
+import pytest
+
 from app.config import settings
 from app.models import Insight
 from app.sync import queue_sync
@@ -20,11 +22,14 @@ class FakeRouter:
                        actionItems=[{"text": "Follow up", "ownerDisplayName": "Ada"}])
 
 
-def test_upload_saved_and_excluded_from_graph(monkeypatch, client, store, signed_in):
+@pytest.mark.parametrize("filename", ["notes.txt", "notes.vtt", "notes.srt", "teams.docx"])
+def test_upload_saved_and_excluded_from_graph(
+    monkeypatch, client, store, signed_in, filename
+):
     enable(monkeypatch)
     monkeypatch.setattr("app.web.OpenRouter", FakeRouter)
     response = client.post("/api/transcripts/upload", headers=signed_in,
-                           json={"filename": "notes.txt", "subject": "Planning", "text": "Ada: I will follow up."})
+                           json={"filename": filename, "subject": "Planning", "text": "Ada: I will follow up."})
     assert response.status_code == 200
     meeting = store.meetings(USER)[0]
     assert meeting["content"]["source"] == "upload"

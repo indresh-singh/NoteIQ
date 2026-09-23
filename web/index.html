@@ -7,7 +7,8 @@
   <link rel="stylesheet" href="/static/style.css?v=1.4.7">
   <script src="/static/vendor/teams.min.js" defer></script>
   <script src="/static/vendor/adaptivecards.min.js" defer></script>
-  <script src="/static/app.js?v=1.5.2" defer></script>
+  <script src="/static/vendor/mammoth.browser.min.js" defer></script>
+  <script src="/static/app.js?v=1.5.3" defer></script>
 </head>
 <body>
   <main>
@@ -37,11 +38,11 @@
       <section id="upload-panel" role="tabpanel" aria-labelledby="upload-tab" hidden>
         <form id="upload-transcript" class="upload-transcript">
           <h2>Analyze a custom transcript</h2>
-          <p>Upload a UTF-8 TXT, VTT or SRT file (up to 60,000 characters). NoteIQ sends the transcript to the configured AI service to generate meeting notes and action items.</p>
+          <p>Upload a Teams DOCX or UTF-8 TXT, VTT or SRT file (up to 60,000 extracted characters). NoteIQ sends the transcript to the configured AI service to generate meeting notes and action items.</p>
           <label for="upload-title">Meeting title</label>
           <input id="upload-title" maxlength="200" required placeholder="Project planning">
           <label for="upload-file">Transcript file</label>
-          <input id="upload-file" type="file" accept=".txt,.vtt,.srt" required>
+          <input id="upload-file" type="file" accept=".docx,.txt,.vtt,.srt" required>
           <p class="hint">Only your latest successful run is kept. Generating a new result replaces the previous upload and its insights.</p>
           <button type="submit" class="primary">Generate</button>
           <p id="upload-status" role="status"></p>

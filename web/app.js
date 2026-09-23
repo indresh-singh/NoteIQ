@@ -902,6 +902,39 @@ for (const id of ["upload", "meetings"]) {
     $(upload ? "#upload-tab" : "#meetings-tab").focus();
   };
 }
+const MAX_TRANSCRIPT_CHARS = 60000;
+const MAX_TEXT_FILE_BYTES = 240000;
+const MAX_DOCX_FILE_BYTES = 10 * 1024 * 1024;
+
+async function extractTranscriptText(file) {
+  const isDocx = /\.docx$/i.test(file.name);
+  if (isDocx) {
+    if (file.size > MAX_DOCX_FILE_BYTES) {
+      throw new Error("Choose a DOCX file smaller than 10 MB.");
+    }
+    if (!window.mammoth?.extractRawText) {
+      throw new Error("DOCX reading is unavailable. Reload NoteIQ and try again.");
+    }
+    let result;
+    try {
+      result = await window.mammoth.extractRawText({arrayBuffer: await file.arrayBuffer()});
+    } catch {
+      throw new Error("NoteIQ couldn't read that DOCX file. It may be malformed or password-protected.");
+    }
+    if (!result.value.trim()) {
+      throw new Error("The DOCX contains no readable text. It may be empty or image-only.");
+    }
+    return result.value;
+  }
+  if (!/\.(txt|vtt|srt)$/i.test(file.name) || file.size > MAX_TEXT_FILE_BYTES) {
+    throw new Error("Choose a Teams DOCX or UTF-8 TXT, VTT or SRT transcript.");
+  }
+  try {
+    return new TextDecoder("utf-8", {fatal: true}).decode(await file.arrayBuffer());
+  } catch {
+    throw new Error("Save your transcript as UTF-8 text, then upload it again.");
+  }
+}
 $("#upload-transcript").onsubmit = async (event) => {
   event.preventDefault();
   const button = event.currentTarget.querySelector("button");
@@ -913,13 +946,10 @@ $("#upload-transcript").onsubmit = async (event) => {
   showError();
   $("#upload-status").textContent = "Reading transcript…";
   try {
-    if (!/\.(txt|vtt|srt)$/i.test(file.name) || file.size > 240000) {
-      throw new Error("Choose a UTF-8 TXT, VTT or SRT file with up to 60,000 characters.");
+    const text = await extractTranscriptText(file);
+    if (!text.trim() || [...text].length > MAX_TRANSCRIPT_CHARS) {
+      throw new Error("Transcript must contain between 1 and 60,000 characters.");
     }
-    let text;
-    try { text = new TextDecoder("utf-8", {fatal: true}).decode(await file.arrayBuffer()); }
-    catch { throw new Error("Save your transcript as UTF-8 text, then upload it again."); }
-    if (!text.trim() || [...text].length > 60000) throw new Error("Transcript must contain between 1 and 60,000 characters.");
     $("#upload-status").textContent = "Generating summary and action items…";
     await api("/api/transcripts/upload", {
       subject: $("#upload-title").value.trim(), filename: file.name, text

@@ -14,5 +14,13 @@
     "sha256": "5e7c13f3300ae7b89b34703501e08d709fbb6635f1c6755b92495577a77344f2",
     "source": "https://registry.npmjs.org/adaptivecards/-/adaptivecards-3.0.6.tgz",
     "integrity": "sha512-WDCIb2WXZ7cOHJ9HIHRNdhSt861HySVOdN2xPk2aKHAF3JvD8QGQ8/XcNFrDJxCteOog8MM7EBlXfSAR8JXKAg=="
+  },
+  {
+    "package": "mammoth",
+    "version": "1.12.3",
+    "file": "mammoth.browser.min.js",
+    "sha256": "f9465c0e4b91c6ab5fe03db285aa3c5bd33a1d20da781b8dffc5676bc9689a95",
+    "source": "https://registry.npmjs.org/mammoth/-/mammoth-1.12.3.tgz",
+    "integrity": "sha512-kkv2MrSFk3f/w3uLsz4FG/91LdWp2j+qmp7AjG2v7w2xgX5YDxiaFlaWourXrXtyUR6335+9guyIlPBnhHLvKw=="
   }
 ]
