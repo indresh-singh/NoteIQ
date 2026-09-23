@@ -55,6 +55,69 @@ ACCESS_DENIED_MESSAGE = (
     "The meeting may have expired or its access may be restricted."
 )
 
+# Which artifact a denial blocked, for a message that names it.
+DENIED_MESSAGES = {
+    frozenset({"transcript"}): (
+        "Microsoft Graph denied access to this meeting's transcript. The meeting may "
+        "have expired or its access may be restricted."
+    ),
+    frozenset({"insight"}): (
+        "Microsoft Graph denied access to this meeting's Copilot insights. The meeting "
+        "may have expired or its access may be restricted."
+    ),
+    frozenset({"transcript", "insight"}): ACCESS_DENIED_MESSAGE,
+}
+MEETING_REJECTED_MESSAGE = (
+    "Microsoft Graph rejected this meeting request. See server logs for details."
+)
+ARTIFACT_REJECTED_MESSAGE = (
+    "Microsoft Graph rejected this meeting's artifact request. See server logs for details."
+)
+
+
+def _record_permanent_failure(
+    store,
+    user_id: str,
+    meeting_id: str,
+    saved: dict,
+    failed: dict[str, bool],
+    rejected_message: str,
+    metadata: dict | None = None,
+) -> str:
+    """Stop polling a meeting Graph refuses, warning only about what is missing.
+
+    failed maps each blocked kind ("transcript"/"insight") to whether Graph
+    denied it (401/403) rather than rejecting it. Either way the status stays
+    terminal, so the sweep stops asking. But a card that already holds that
+    kind shows no warning: re-checking a finished meeting -- which Refresh does
+    for every recent meeting -- must not put an access alarm above content the
+    person can already read. Any insight counts, whichever provider made it.
+    """
+    held = {kind for kind in ("transcript", "insight") if bodies(saved, kind)}
+    missing = {kind: denied for kind, denied in failed.items() if kind not in held}
+    denied = {kind for kind, was_denied in failed.items() if was_denied}
+    status = "SKIPPED_ACCESS_DENIED" if denied else "SKIPPED_GRAPH_REJECTED"
+    missing_denied = frozenset(kind for kind, was_denied in missing.items() if was_denied)
+    if not missing:
+        message = None
+    elif missing_denied:
+        message = DENIED_MESSAGES[missing_denied]
+    else:
+        message = rejected_message
+    store.set_meeting_sync_state(user_id, meeting_id, status, message, metadata)
+    log.warning(
+        "Meeting sync blocked user=%s meeting=%s status=%s blocked_kinds=%s held_kinds=%s "
+        "warning_shown=%s",
+        user_id,
+        digest(meeting_id)[:8],
+        status,
+        ",".join(sorted(failed)),
+        ",".join(sorted(held)) or "-",
+        message is not None,
+    )
+    return status
+
+
 # bodies and settled live in app.store, which computes them once per write into
 # the columns the sweep reads; re-exported here because this is where the rules
 # they express are documented.
@@ -493,15 +556,16 @@ async def sync_meeting(event, graph, store, found: dict | None = None):
         )
         if retryable(error):
             raise
+        # Without the meeting, neither artifact can be listed.
         denied = error.response.status_code in {401, 403}
-        status = "SKIPPED_ACCESS_DENIED" if denied else "SKIPPED_GRAPH_REJECTED"
-        message = (
-            ACCESS_DENIED_MESSAGE
-            if denied
-            else "Microsoft Graph rejected this meeting request. See server logs for details."
+        return _record_permanent_failure(
+            store,
+            user_id,
+            event.meeting_id,
+            saved,
+            {"transcript": denied, "insight": denied},
+            MEETING_REJECTED_MESSAGE,
         )
-        store.set_meeting_sync_state(user_id, event.meeting_id, status, message)
-        return status
 
     _log_meeting_details(user_id, event.meeting_id, meeting, "sync")
     owner = _organizer_id(meeting)
@@ -542,7 +606,7 @@ async def sync_meeting(event, graph, store, found: dict | None = None):
         user_id, event.meeting_id, None, metadata=_meeting_metadata(meeting)
     )
     transient_errors = []
-    permanent_errors = []
+    permanent_errors: dict[str, httpx.HTTPStatusError] = {}
     # Copilot insight sync always runs: Copilot and external-service insights
     # are captured side by side.
     kinds = [
@@ -592,7 +656,7 @@ async def sync_meeting(event, graph, store, found: dict | None = None):
             if retryable(error):
                 transient_errors.append(error)
             else:
-                permanent_errors.append(error)
+                permanent_errors[kind] = error
             log.exception(
                 "Meeting sync failed user=%s meeting=%s kind=%s resource=%s error_type=%s error=%s",
                 user_id,
@@ -641,16 +705,18 @@ async def sync_meeting(event, graph, store, found: dict | None = None):
         )
         raise transient_errors[0]
     if permanent_errors:
-        statuses = {error.response.status_code for error in permanent_errors}
-        denied = bool(statuses & {401, 403})
-        status = "SKIPPED_ACCESS_DENIED" if denied else "SKIPPED_GRAPH_REJECTED"
-        message = (
-            ACCESS_DENIED_MESSAGE
-            if denied
-            else "Microsoft Graph rejected this meeting's artifact request. See server logs for details."
-        )
-        store.set_meeting_sync_state(
-            user_id, event.meeting_id, status, message, _meeting_metadata(meeting)
+        statuses = {error.response.status_code for error in permanent_errors.values()}
+        status = _record_permanent_failure(
+            store,
+            user_id,
+            event.meeting_id,
+            saved,
+            {
+                kind: error.response.status_code in {401, 403}
+                for kind, error in permanent_errors.items()
+            },
+            ARTIFACT_REJECTED_MESSAGE,
+            _meeting_metadata(meeting),
         )
         log.warning(
             "Meeting sync completed terminally user=%s meeting=%s status=%s http_statuses=%s "
@@ -659,7 +725,7 @@ async def sync_meeting(event, graph, store, found: dict | None = None):
             tag,
             status,
             sorted(statuses),
-            len(permanent_errors),
+            ",".join(sorted(permanent_errors)),
         )
         return status
     return "SYNCED"

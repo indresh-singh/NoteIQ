@@ -1008,7 +1008,9 @@ def create_app(
     ):
         config = settings()
         if not config.external_ai_enabled:
-            raise HTTPException(409, "Configure the selected AI provider to analyze uploaded transcripts.")
+            raise HTTPException(
+                409, "Configure the selected AI provider to analyze uploaded transcripts."
+            )
         if not body.filename.lower().endswith((".docx", ".txt", ".vtt", ".srt")):
             raise HTTPException(400, "Upload a Teams .docx or UTF-8 .txt, .vtt or .srt file.")
         if not body.subject.strip() or not body.text.strip() or "\x00" in body.text:
