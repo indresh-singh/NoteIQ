@@ -13,14 +13,14 @@
 .note-collapsible details{margin:10px 0 0 18px}
 .note-collapsible details summary{font-weight:600;font-size:13px}
 
-#clickup-settings{margin:20px 0 24px;padding:26px 28px;border:1px solid var(--line);border-radius:14px;background:var(--paper)}
-#clickup-settings h2{display:flex;align-items:center;gap:9px;font-size:16px;margin:0 0 10px;letter-spacing:-.2px}
+#clickup-settings,#planner-settings{margin:20px 0 24px;padding:26px 28px;border:1px solid var(--line);border-radius:14px;background:var(--paper)}
+#clickup-settings h2,#planner-settings h2{display:flex;align-items:center;gap:9px;font-size:16px;margin:0 0 10px;letter-spacing:-.2px}
 #clickup-settings h2 .clickup-icon{width:18px;height:18px}
-#clickup-settings #clickup-status{margin:0 0 18px;font-size:13px;color:var(--muted);line-height:1.5}
+#clickup-settings #clickup-status,#planner-settings #planner-status{margin:0 0 18px;font-size:13px;color:var(--muted);line-height:1.5}
 #clickup-settings #clickup-connect{display:inline-flex;align-items:center;gap:8px;background:var(--accent);color:#fff;border-color:var(--accent);padding:10px 20px}
 #clickup-settings #clickup-connect:hover{opacity:.9;color:#fff}
 #clickup-settings #clickup-connect img{width:15px;height:15px;filter:brightness(0) invert(1)}
-#clickup-lists-wrap{margin:0 0 20px}
+#clickup-lists-wrap,#planner-plans-wrap{margin:0 0 20px}
 .clickup-lists{list-style:none;margin:0 0 16px;padding:0;border:1px solid var(--line);border-radius:10px;overflow:hidden}
 .clickup-lists:empty{display:none}
 .clickup-list-row{display:flex;align-items:center;gap:12px;padding:12px 16px;background:var(--paper)}
@@ -30,13 +30,15 @@
 .clickup-list-row button{font-size:12px;padding:6px 12px}
 .clickup-list-remove{color:var(--muted)}
 .clickup-list-remove:hover{color:#c0392b;border-color:#c0392b}
-#clickup-add-list{display:flex;flex-wrap:wrap;gap:12px;align-items:end}
-#clickup-add-list label{display:grid;gap:6px;font-size:12px;color:var(--muted);flex:1;min-width:220px;max-width:360px}
-#clickup-add-list select{padding:9px 11px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--text);font-size:13px;height:38px;font:inherit}
-#clickup-add-list select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-#clickup-add-list button{height:38px;white-space:nowrap}
-#clickup-refresh-lists{color:var(--muted);background:transparent}
+#clickup-add-list,#planner-add-plan{display:flex;flex-wrap:wrap;gap:12px;align-items:end}
+#clickup-add-list label,#planner-add-plan label{display:grid;gap:6px;font-size:12px;color:var(--muted);flex:1;min-width:220px;max-width:360px}
+#clickup-add-list select,#planner-add-plan select{padding:9px 11px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--text);font-size:13px;height:38px;font:inherit}
+#clickup-add-list select:focus-visible,#planner-add-plan select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+#clickup-add-list button,#planner-add-plan button{height:38px;white-space:nowrap}
+#clickup-refresh-lists,#planner-refresh-plans,#planner-refresh-tasks{color:var(--muted);background:transparent}
 #clickup-settings #clickup-disconnect{border-color:transparent;background:transparent;color:var(--muted);padding:6px 0;font-size:12px;margin-top:4px}
+#planner-tasks-wrap{margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
+#planner-tasks-wrap summary{cursor:pointer;font-weight:600;font-size:13px;margin-bottom:10px}
 #clickup-settings #clickup-disconnect:hover{color:#c0392b;border-color:transparent}
 
 .clickup-button{display:inline-flex;align-items:center;gap:8px}

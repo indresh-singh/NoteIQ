@@ -99,9 +99,7 @@ def settings() -> Settings:
         openrouter_model=os.getenv("OPENROUTER_MODEL") or None,
         openai_api_key=os.getenv("OPENAI_API_KEY") or None,
         openai_model=os.getenv("OPENAI_MODEL", "gpt-5.6-luna"),
-        openai_min_request_interval_seconds=os.getenv(
-            "OPENAI_MIN_REQUEST_INTERVAL_SECONDS", "30"
-        ),
+        openai_min_request_interval_seconds=os.getenv("OPENAI_MIN_REQUEST_INTERVAL_SECONDS", "30"),
         role=os.getenv("NOTEIQ_ROLE", "all"),
         job_concurrency=os.getenv("NOTEIQ_JOB_CONCURRENCY", "4"),
         subscription_concurrency=os.getenv("NOTEIQ_SUBSCRIPTION_CONCURRENCY", "15"),

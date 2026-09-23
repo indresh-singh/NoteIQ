@@ -30,6 +30,7 @@ from app.notifications import validate_notifications
 from app.observability import log_context, safe_correlation_id
 from app.openai import OpenAI
 from app.openrouter import MAX_TRANSCRIPT_CHARS, OpenRouter
+from app.planner import Planner
 from app.store import Store, digest
 from app.subscriptions import resource_owner
 from app.transcripts import meeting_transcript_text, summarize_with_ai
@@ -54,11 +55,24 @@ class ClickUpList(BaseModel):
 
 class ClickUpExport(BaseModel):
     list_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9]+$", max_length=64)
-    provider: Literal["copilot", "openrouter"] | None = None
+    # "openai" was missing here even after OpenAI became a summary provider;
+    # filtering an export by it would 422 despite such insights existing.
+    provider: Literal["copilot", "openrouter", "openai"] | None = None
 
 
 class ClickUpConnect(BaseModel):
     in_teams: bool = False
+
+
+# Graph object IDs are opaque, provider-issued strings (letters, digits, "-", "_"),
+# unlike ClickUp's numeric-only List IDs -- hence the different pattern.
+class PlannerPlan(BaseModel):
+    plan_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,100}$")
+
+
+class PlannerExport(BaseModel):
+    plan_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,100}$")
+    provider: Literal["copilot", "openrouter", "openai"] | None = None
 
 
 class CustomTranscript(BaseModel):
@@ -148,6 +162,14 @@ def create_app(
             app.state.clickup = (
                 ClickUp(app.state.config) if app.state.config.clickup_enabled else None
             )
+            # Always on: Planner needs no separate consent flow of its own to
+            # gate, unlike ClickUp -- it rides the same app-only Graph
+            # credentials already required for everything else. Whether the
+            # tenant has actually granted the two extra Graph permissions is
+            # a property of the tenant, not something this process can check
+            # in advance; a call made without them fails with a clear error
+            # at the point of use instead.
+            app.state.planner = Planner(app.state.config, app.state.graph)
             app.state.repair = asyncio.Event()
             task = (
                 asyncio.create_task(
@@ -657,6 +679,178 @@ def create_app(
                 user["id"],
                 meeting_id,
                 list_id,
+                created,
+                skipped,
+                error,
+                exc_info=True,
+            )
+            raise HTTPException(502, str(error)) from None
+        return {"created": created, "skipped": skipped}
+
+    @app.get("/api/planner")
+    async def planner_status(request: Request, user: dict = Depends(current_user)):
+        store = request.app.state.store
+        default = store.planner_default(user["id"])
+        default_id = default.get("plan_id") if default else None
+        plans = store.planner_plans(user["id"])
+        return {
+            "plan_id": default_id,
+            "plan_name": default.get("plan_name") if default else None,
+            "plans": [{**item, "is_default": item["plan_id"] == default_id} for item in plans],
+        }
+
+    @app.get("/api/planner/available-plans")
+    async def planner_available_plans(request: Request, user: dict = Depends(current_user)):
+        client = request.app.state.planner
+        try:
+            plans = await client.available_plans(user["id"])
+        except ValueError as error:
+            log.warning(
+                "Planner plan discovery failed user=%s error=%s", user["id"], error, exc_info=True
+            )
+            raise HTTPException(502, str(error)) from None
+        return {"plans": plans}
+
+    @app.post("/api/planner/plans")
+    async def planner_add_plan(
+        body: PlannerPlan, request: Request, user: dict = Depends(current_user)
+    ):
+        client = request.app.state.planner
+        store = request.app.state.store
+        try:
+            name = await client.plan_name(body.plan_id)
+        except ValueError as error:
+            log.warning(
+                "Planner plan lookup failed user=%s plan_id=%s error=%s",
+                user["id"],
+                body.plan_id,
+                error,
+                exc_info=True,
+            )
+            raise HTTPException(400, "That Planner plan couldn't be found. Check the ID.") from None
+        store.add_planner_plan(user["id"], body.plan_id, name)
+        if not store.planner_default(user["id"]):
+            store.set_planner_default(user["id"], body.plan_id, name)
+        return {"plan_id": body.plan_id, "plan_name": name}
+
+    @app.post("/api/planner/plans/default")
+    async def planner_default_plan(
+        body: PlannerPlan, request: Request, user: dict = Depends(current_user)
+    ):
+        store = request.app.state.store
+        plans = {item["plan_id"]: item["plan_name"] for item in store.planner_plans(user["id"])}
+        if body.plan_id not in plans:
+            raise HTTPException(404, "Add this Planner plan before setting it as default.")
+        store.set_planner_default(user["id"], body.plan_id, plans[body.plan_id])
+        return {"plan_id": body.plan_id, "plan_name": plans[body.plan_id]}
+
+    @app.delete("/api/planner/plans/{plan_id}")
+    async def planner_remove_plan(
+        plan_id: str, request: Request, user: dict = Depends(current_user)
+    ):
+        request.app.state.store.remove_planner_plan(user["id"], plan_id)
+        return {"status": "removed"}
+
+    @app.get("/api/planner/tasks")
+    async def planner_tasks_list(
+        plan_id: str, request: Request, user: dict = Depends(current_user)
+    ):
+        client = request.app.state.planner
+        store = request.app.state.store
+        if plan_id not in {item["plan_id"] for item in store.planner_plans(user["id"])}:
+            raise HTTPException(400, "Unknown Planner plan. Add it in Account settings first.")
+        try:
+            tasks = await client.list_tasks(plan_id)
+        except ValueError as error:
+            log.warning(
+                "Planner task listing failed user=%s plan_id=%s error=%s",
+                user["id"],
+                plan_id,
+                error,
+                exc_info=True,
+            )
+            raise HTTPException(502, str(error)) from None
+        return {"tasks": tasks}
+
+    @app.post("/api/meetings/{meeting_id}/planner")
+    async def export_planner(
+        meeting_id: int,
+        body: PlannerExport,
+        request: Request,
+        user: dict = Depends(current_user),
+    ):
+        client = request.app.state.planner
+        store = request.app.state.store
+        meeting = store.meeting(user["id"], meeting_id)
+        default = store.planner_default(user["id"])
+        plan_id = body.plan_id or (default.get("plan_id") if default else None)
+        if not plan_id:
+            raise HTTPException(409, "Choose a Planner plan first.")
+        if body.plan_id and body.plan_id not in {
+            item["plan_id"] for item in store.planner_plans(user["id"])
+        }:
+            raise HTTPException(400, "Unknown Planner plan. Add it in Account settings first.")
+        if not meeting:
+            raise HTTPException(404, "Meeting not found.")
+        created = skipped = 0
+        try:
+            for action in actions(meeting["content"], body.provider):
+                raw = "|".join(
+                    (
+                        plan_id,
+                        meeting["content"].get("meeting_id") or "",
+                        action.get("title") or "",
+                        action.get("text") or "",
+                        action.get("ownerDisplayName") or "",
+                    )
+                )
+                action_key = hashlib.sha256(raw.encode()).hexdigest()
+                existing_task_id = store.planner_task_id(user["id"], action_key)
+                if existing_task_id:
+                    # The local record doesn't know if the task was deleted on
+                    # Planner's side (e.g. from the Planner app), so confirm
+                    # with the API before trusting it as "already sent".
+                    if await client.task_exists(existing_task_id):
+                        skipped += 1
+                        continue
+                    store.forget_planner_task(user["id"], action_key)
+                # Reserve the row before calling Planner: this is a single atomic
+                # statement, so concurrent exports of the same action item can't
+                # both pass the "already sent?" check and both create a task.
+                if not store.reserve_planner_task(user["id"], action_key):
+                    skipped += 1
+                    continue
+                name = action.get("title") or action.get("text")
+                detail = action.get("text") or ""
+                owner = action.get("ownerDisplayName") or "Owner not specified"
+                try:
+                    task = await client.create_task(
+                        plan_id,
+                        name,
+                        f"{detail}\n\n**Owner:** {owner}\n\n_Source: NoteIQ — {meeting['subject']}_",
+                    )
+                except Exception as error:
+                    store.release_planner_task(user["id"], action_key)
+                    log.exception(
+                        "Planner task creation failed user=%s meeting_row=%s plan_id=%s "
+                        "action_key=%s error_type=%s error=%s",
+                        user["id"],
+                        meeting_id,
+                        plan_id,
+                        action_key[:12],
+                        type(error).__name__,
+                        error,
+                    )
+                    raise
+                store.save_planner_task(user["id"], action_key, task)
+                created += 1
+        except ValueError as error:
+            log.warning(
+                "Planner export failed user=%s meeting_row=%s plan_id=%s created=%s "
+                "skipped=%s error=%s",
+                user["id"],
+                meeting_id,
+                plan_id,
                 created,
                 skipped,
                 error,

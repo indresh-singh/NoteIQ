@@ -81,6 +81,24 @@
           </div>
           <button id="clickup-disconnect" hidden>Disconnect ClickUp</button>
         </section>
+        <section id="planner-settings" hidden>
+          <h2>Microsoft Planner</h2>
+          <p id="planner-status">Send Copilot action items to a Microsoft Planner plan.</p>
+          <div id="planner-plans-wrap" hidden>
+            <ul id="planner-plans" class="clickup-lists"></ul>
+            <form id="planner-add-plan">
+              <label>Add a Planner plan <select id="planner-plan-id" required></select></label>
+              <button type="submit">Add Plan</button>
+              <button type="button" id="planner-refresh-plans" title="Refresh the list of Planner plans">Refresh</button>
+            </form>
+            <details id="planner-tasks-wrap">
+              <summary>Existing tasks in the default plan</summary>
+              <button type="button" id="planner-refresh-tasks">Refresh tasks</button>
+              <ul id="planner-tasks" class="clickup-lists"></ul>
+              <p id="planner-tasks-empty" class="hint" hidden>No tasks found in this plan yet.</p>
+            </details>
+          </div>
+        </section>
         <p>Disconnect to stop collection and messages, and delete your saved NoteIQ cards and transcripts. Your original Teams content stays in Microsoft 365.</p>
         <button id="disconnect">Disconnect and delete my NoteIQ cards</button>
       </details>
