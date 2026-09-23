@@ -213,7 +213,7 @@ function renderNote(note, hideTitle) {
 function renderCollapsibleNote(note) {
   const wrapper = element("details", "", "note-collapsible");
   const summary = element("summary");
-  summary.append(element("strong", note.title || (note.text || "Note").slice(0, 60)));
+  summary.append(element("strong", note.title || note.text || "Note"));
   wrapper.append(summary, renderNote(note, true));
   return wrapper;
 }

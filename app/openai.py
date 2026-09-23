@@ -17,18 +17,22 @@ from pydantic import ValidationError
 from app.config import Settings
 from app.models import Insight
 from app.observability import response_diagnostics
-from app.prompts.meeting_summary import MEETING_SUMMARY_SCHEMA, SYSTEM_PROMPT, user_prompt
+from app.prompts.openai_meeting_summary import (
+    OPENAI_MEETING_SUMMARY_SCHEMA,
+    OPENAI_SYSTEM_PROMPT,
+    openai_user_prompt,
+)
 
 log = logging.getLogger(__name__)
 
 API = "https://api.openai.com/v1/responses"
 MAX_TRANSCRIPT_CHARS = 60_000
-MAX_OUTPUT_TOKENS = 1_200
+MAX_OUTPUT_TOKENS = 2_400
 MEETING_SUMMARY_FORMAT = {
     "type": "json_schema",
     "name": "meeting_summary",
     "strict": True,
-    "schema": MEETING_SUMMARY_SCHEMA,
+    "schema": OPENAI_MEETING_SUMMARY_SCHEMA,
 }
 _request_lock = asyncio.Lock()
 _next_request_at = 0.0
@@ -45,14 +49,14 @@ class OpenAI:
         payload = {
             "model": self.config.openai_model,
             "input": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt(subject, text)},
+                {"role": "system", "content": OPENAI_SYSTEM_PROMPT},
+                {"role": "user", "content": openai_user_prompt(subject, text)},
             ],
             "max_output_tokens": MAX_OUTPUT_TOKENS,
-            # Keep summaries concise and inexpensive, following the Responses
-            # controls used by the Enterprise example.
-            "text": {"format": MEETING_SUMMARY_FORMAT, "verbosity": "medium"},
-            "reasoning": {"effort": "low"},
+            # Give the Enterprise path room for Copilot-like thematic detail;
+            # the schema still bounds the shape and the prompt prevents filler.
+            "text": {"format": MEETING_SUMMARY_FORMAT, "verbosity": "high"},
+            "reasoning": {"effort": "medium"},
             # Store the response as requested so it can be inspected in the
             # Enterprise project. Do not add web-search tools: transcript
             # summarisation should rely only on the supplied meeting content.
