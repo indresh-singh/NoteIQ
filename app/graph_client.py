@@ -1,9 +1,12 @@
 import asyncio
 import hashlib
 import logging
+import math
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, TypeVar
@@ -55,6 +58,87 @@ def safe_graph_url(url: str) -> str:
     return value
 
 
+# How long to pause when Graph throttles without saying for how long. Graph
+# normally sends Retry-After; this only covers a response that omits it.
+DEFAULT_THROTTLE_SECONDS = 30.0
+
+
+def retry_after_seconds(response: httpx.Response) -> float | None:
+    """Graph's Retry-After as seconds from now, in either of its two forms."""
+    value = response.headers.get("Retry-After", "")
+    try:
+        return max(float(value), 0.0)
+    except ValueError:
+        pass
+    try:
+        date = parsedate_to_datetime(value)
+    except (ValueError, TypeError):
+        return None
+    return max((date - datetime.now(timezone.utc)).total_seconds(), 0.0)
+
+
+def graph_throttle_seconds(error: BaseException | None) -> float | None:
+    """Seconds Graph asked us to back off, if a Graph 429 is behind this error.
+
+    Follows the exception chain because jobs re-raise Graph failures under
+    their own message (RuntimeError(...) from error). Only Graph's own 429s
+    count: an AI provider's rate limit throttles that provider, not the tenant,
+    and those are raised `from None`, which this respects.
+    """
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if (
+            isinstance(error, httpx.HTTPStatusError)
+            and error.response.status_code == 429
+            and error.request.url.host == "graph.microsoft.com"
+        ):
+            seconds = retry_after_seconds(error.response)
+            return DEFAULT_THROTTLE_SECONDS if seconds is None else seconds
+        error = error.__cause__ or (None if error.__suppress_context__ else error.__context__)
+    return None
+
+
+class GraphBusy(Exception):
+    """Graph is throttling the tenant: tell the person when to try again.
+
+    Deliberately not a ValueError, which the Planner and web layers turn into
+    a generic "could not complete" message; this passes through them to the
+    web app's 429 handler instead.
+    """
+
+    def __init__(self, retry_after: float, *, before: str = "", after: str = ""):
+        self.retry_after = max(math.ceil(retry_after), 1)
+        seconds = f"{self.retry_after} second{'' if self.retry_after == 1 else 's'}"
+        super().__init__(
+            f"{before}Microsoft 365 is limiting requests right now. "
+            f"Try again in about {seconds}.{after}"
+        )
+
+
+def busy_from(error: BaseException) -> GraphBusy | None:
+    """The GraphBusy to show for this error, if Graph throttling caused it."""
+    seconds = graph_throttle_seconds(error)
+    return None if seconds is None else GraphBusy(seconds)
+
+
+# The longest a throttled call waits out Retry-After before giving up. The
+# worker can afford a minute; a person waiting on a button cannot, so
+# interactive requests lower it and get "try again in N seconds" instead.
+INTERACTIVE_RETRY_WAIT_SECONDS = 5.0
+_retry_wait_limit: ContextVar[float] = ContextVar("graph_retry_wait_limit", default=60.0)
+
+
+@contextmanager
+def interactive_requests() -> Iterator[None]:
+    """Graph calls made inside this block wait at most a few seconds on a 429."""
+    token = _retry_wait_limit.set(INTERACTIVE_RETRY_WAIT_SECONDS)
+    try:
+        yield
+    finally:
+        _retry_wait_limit.reset(token)
+
+
 def retryable(error: Exception) -> bool:
     return isinstance(error, httpx.TransportError) or (
         isinstance(error, httpx.HTTPStatusError)
@@ -82,21 +166,17 @@ async def retry(operation: Callable[[], Awaitable[T]]) -> T:
                 raise
             delay = float(2**attempt)
             if isinstance(error, httpx.HTTPStatusError):
-                value = error.response.headers.get("Retry-After", "")
-                try:
-                    delay = max(delay, float(value))
-                except ValueError:
-                    try:
-                        date = parsedate_to_datetime(value)
-                        delay = max(delay, (date - datetime.now(timezone.utc)).total_seconds())
-                    except (ValueError, TypeError):
-                        pass
-            # Leave long throttles to the queue's delayed retry instead of holding a worker.
-            if delay > 60:
+                delay = max(delay, retry_after_seconds(error.response) or 0.0)
+            # Leave long throttles to the queue's delayed retry instead of
+            # holding a worker, or to the person instead of holding a request.
+            limit = _retry_wait_limit.get()
+            if delay > limit:
                 log.warning(
-                    "Graph retry deferred to job queue attempt=%s delay_s=%.3f error_type=%s",
+                    "Graph retry handed back to caller attempt=%s delay_s=%.3f limit_s=%.0f "
+                    "error_type=%s",
                     attempt + 1,
                     delay,
+                    limit,
                     type(error).__name__,
                     exc_info=not isinstance(error, httpx.HTTPStatusError),
                 )
@@ -125,8 +205,11 @@ class GraphClient:
     binds to the running loop, and closed with the application.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, on_throttle: Callable[[float], Any] | None = None) -> None:
         self._client: httpx.AsyncClient | None = None
+        # Called with Retry-After seconds on every 429, so one throttled call
+        # pauses all Graph work for the tenant rather than only itself.
+        self.on_throttle = on_throttle
 
     def client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -197,6 +280,8 @@ class GraphClient:
                 response.headers.get("request-id", "-"),
                 response.headers.get("client-request-id", "-"),
             )
+            if response.status_code == 429:
+                self._throttled(response, safe_target)
             if response.is_error:
                 try:
                     error = response.json().get("error", {})
@@ -218,6 +303,28 @@ class GraphClient:
             return response.json() if response.content else {}
 
         return await retry(send) if retries else await send()
+
+    def _throttled(self, response: httpx.Response, safe_target: str) -> None:
+        seconds = retry_after_seconds(response)
+        seconds = DEFAULT_THROTTLE_SECONDS if seconds is None else seconds
+        log.warning(
+            "Graph throttled url=%s retry_after_s=%.1f retry_after_header=%s",
+            safe_target,
+            seconds,
+            "present" if response.headers.get("Retry-After") else "missing",
+        )
+        if self.on_throttle is None:
+            return
+        try:
+            self.on_throttle(seconds)
+        except Exception as error:
+            # Recording the pause is best effort: failing to record it must
+            # not turn a throttled call into a different error.
+            log.exception(
+                "Graph throttle pause could not be recorded error_type=%s error=%s",
+                type(error).__name__,
+                error,
+            )
 
     async def list(self, path: str) -> list[dict]:
         items = []

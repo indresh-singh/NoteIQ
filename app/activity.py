@@ -5,6 +5,7 @@ import logging
 import time
 
 from app.config import settings
+from app.graph_client import graph_throttle_seconds
 
 INSIGHTS_READY = "Your meeting summary and action items are ready. Open NoteIQ to review them."
 log = logging.getLogger(__name__)
@@ -25,6 +26,8 @@ async def send_next_notification(store, graph):
         return False
     user = store.user(job["user_id"])
     status = "cancelled"
+    attempts = job["attempts"] + 1
+    due = time.time() + min(60 * 2 ** job["attempts"], 900)
     # Only insights are worth an interruption: a meeting gets one notification,
     # when its summary and action items land. Transcript-ready notifications
     # were retired, so drop any an older build left queued.
@@ -53,20 +56,33 @@ async def send_next_notification(store, graph):
             )
             status = "sent"
         except Exception as error:
-            status = "failed" if job["attempts"] >= 4 else "pending"
-            log.exception(
-                "Activity notification failed id=%s user=%s attempt=%s "
-                "next_status=%s error_type=%s error=%s",
-                job["id"],
-                job["user_id"],
-                job["attempts"] + 1,
-                status,
-                type(error).__name__,
-                error,
-            )
+            wait = graph_throttle_seconds(error)
+            if wait is not None:
+                # Throttled, not undeliverable: send again once Graph allows,
+                # without using up one of the notification's five attempts.
+                store.pause_graph(wait)
+                attempts, due, status = job["attempts"], store.graph_paused_until(), "pending"
+                log.warning(
+                    "Activity notification throttled by Graph id=%s user=%s retry_after_s=%.1f",
+                    job["id"],
+                    job["user_id"],
+                    wait,
+                )
+            else:
+                status = "failed" if job["attempts"] >= 4 else "pending"
+                log.exception(
+                    "Activity notification failed id=%s user=%s attempt=%s "
+                    "next_status=%s error_type=%s error=%s",
+                    job["id"],
+                    job["user_id"],
+                    job["attempts"] + 1,
+                    status,
+                    type(error).__name__,
+                    error,
+                )
     with store.connect() as db:
         db.execute(
-            "UPDATE activity_outbox SET status=?, attempts=attempts+1, due=? WHERE id=?",
-            (status, time.time() + min(60 * 2 ** job["attempts"], 900), job["id"]),
+            "UPDATE activity_outbox SET status=?, attempts=?, due=? WHERE id=?",
+            (status, attempts, due, job["id"]),
         )
     return True

@@ -119,9 +119,7 @@ async def test_base_meeting_transient_failure_is_retried(store, graph):
 
 
 @pytest.mark.parametrize("status", [429, 500, 503])
-async def test_sync_transient_http_failures_keep_original_error_for_retry(
-    store, graph, status
-):
+async def test_sync_transient_http_failures_keep_original_error_for_retry(store, graph, status):
     store.save_meeting(USER, "Meeting", {"meeting_id": "m"})
     error = graph_error(status, "TooManyRequests" if status == 429 else "ServiceUnavailable")
     graph.list.side_effect = [error, []]
@@ -166,7 +164,9 @@ def test_refresh_requires_auth_and_checks_graph_only_for_own_meetings(
     store.save_meeting(other, "Other", {"meeting_id": "private"})
     store.save_meeting(USER, "Mine", {"meeting_id": "mine"})
     assert client.post("/api/sync", json={}).status_code == 401
-    assert client.post("/api/sync", headers=signed_in, json={}).json() == {"queued": 0}
+    result = client.post("/api/sync", headers=signed_in, json={}).json()
+    assert result["status"] == "completed"
+    assert (result["new_meetings"], result["new_insights"]) == (0, 0)
     # Nothing is queued for the worker to pick up later: discovery and the
     # per-meeting check both ran against Graph inline, within this request.
     with store.connect() as db:
@@ -187,8 +187,9 @@ async def test_recovery_uses_the_user_meeting_link(store, graph):
 
 def test_refresh_discovers_new_transcripts_immediately(client, store, signed_in, graph):
     graph.list.return_value = [{"id": "t", "meetingId": "new-meeting"}]
-    response = client.post("/api/sync", headers=signed_in, json={})
-    assert response.json() == {"queued": 1}
+    result = client.post("/api/sync", headers=signed_in, json={}).json()
+    assert (result["new_meetings"], result["new_insights"]) == (1, 0)
+    assert result["complete"]
     job = parse_event(store.next_job()["payload"])
     assert job.meeting_id == "new-meeting"
     assert job.transcript_id == "t"

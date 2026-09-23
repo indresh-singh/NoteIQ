@@ -154,3 +154,55 @@ def test_postgres_due_subscriptions_binds_force_as_boolean():
         ("transcripts", "transcripts-sub"),
     }
     store.disconnect(user_id)
+
+
+@pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="PostgreSQL is not configured")
+def test_postgres_refresh_lock_has_exactly_one_winner():
+    """Replicas race for one person's Refresh lock; the database must pick one."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    store = Store(Path("/tmp/unused.sqlite3"), database_url=os.environ["TEST_DATABASE_URL"])
+    user_id = str(uuid4())
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        won = list(
+            pool.map(
+                lambda run: store.claim("refresh_lock", user_id, {"run": run}, ttl=120),
+                range(8),
+            )
+        )
+    assert won.count(True) == 1
+    winner = store.get("refresh_lock", user_id)
+    assert not store.release("refresh_lock", user_id, {"run": "someone-else"})
+    assert store.release("refresh_lock", user_id, winner)
+    assert store.claim("refresh_lock", user_id, {"run": "expired"}, ttl=-1)
+    assert store.claim("refresh_lock", user_id, {"run": "next"}, ttl=120)
+    store.release("refresh_lock", user_id, {"run": "next"})
+
+
+@pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="PostgreSQL is not configured")
+def test_postgres_graph_pause_only_extends():
+    store = Store(Path("/tmp/unused.sqlite3"), database_url=os.environ["TEST_DATABASE_URL"])
+    store.pause_graph(300)
+    long_pause = store.graph_paused_until()
+    store.pause_graph(5)
+    assert store.graph_paused_until() == long_pause
+    store.pause_graph(600)
+    assert store.graph_paused_until() > long_pause
+    with store.connect() as db:
+        db.execute("DELETE FROM temporary WHERE kind='graph'")
+
+
+@pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="PostgreSQL is not configured")
+def test_postgres_flags_only_users_with_lapsing_subscriptions():
+    store = Store(Path("/tmp/unused.sqlite3"), database_url=os.environ["TEST_DATABASE_URL"])
+    lapsing, healthy = str(uuid4()), str(uuid4())
+    for user_id in (lapsing, healthy):
+        store.enroll(user_id, "PostgreSQL test")
+        store.status(user_id, "LISTENING")
+    store.save_subscription(lapsing, "insights", "a", time.time() + 60)
+    store.save_subscription(healthy, "insights", "b", time.time() + 3600)
+    assert lapsing in store.flag_delayed_updates(600)
+    assert store.user(lapsing)["status"] == "UPDATES_DELAYED"
+    assert store.user(healthy)["status"] == "LISTENING"
+    for user_id in (lapsing, healthy):
+        store.disconnect(user_id)

@@ -1,13 +1,14 @@
 import asyncio
 import logging
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
 import httpx
 
 from app.config import settings
-from app.graph_client import GraphClient
+from app.graph_client import GraphClient, graph_throttle_seconds
 from app.store import Store
 
 log = logging.getLogger(__name__)
@@ -79,7 +80,12 @@ async def ensure_subscription(
     return created["id"], expiry
 
 
-async def renew_subscriptions(graph: GraphClient, store: Store, force: bool = False) -> None:
+async def renew_subscriptions(graph: GraphClient, store: Store, force: bool = False) -> int:
+    """Bring every enrolled user's subscriptions up to date with Graph.
+
+    Returns how many users were deferred because Graph throttled the tenant;
+    the caller comes back for them sooner than the normal renewal cadence.
+    """
     config = settings()
     notification_url = config.public_url + "/api/graph/notifications"
     active = await graph.list("/subscriptions")
@@ -126,9 +132,11 @@ async def renew_subscriptions(graph: GraphClient, store: Store, force: bool = Fa
         due_by_user.setdefault(row["user_id"], {})[row["resource_kind"]] = row["subscription_id"]
 
     gate = asyncio.Semaphore(settings().subscription_concurrency)
+    deferred_users = set()
 
     async def process_user(user_id: str) -> None:
         errors = []
+        deferred = False
         # Copilot insight subscriptions run regardless of AI_PROVIDER: Copilot
         # and OpenRouter insights are captured side by side, not as an
         # either/or choice. A missing transcript permission must not prevent
@@ -139,12 +147,30 @@ async def renew_subscriptions(graph: GraphClient, store: Store, force: bool = Fa
             resource = resource_for(user_id, kind)
             subscription_id = due_by_user[user_id][kind]
             async with gate:
+                # Once Graph has throttled the tenant, the users still waiting
+                # for the gate are deferred rather than piling on more calls.
+                if store.graph_paused_until() > time.time():
+                    deferred = True
+                    break
                 try:
                     new_id, expiry = await ensure_subscription(
                         graph, config, resource, subscription_id
                     )
                     store.save_subscription(user_id, kind, new_id, expiry.timestamp())
                 except httpx.HTTPStatusError as error:
+                    wait = graph_throttle_seconds(error)
+                    if wait is not None:
+                        # Throttling says nothing about this user's connection,
+                        # so their status is left as it was.
+                        store.pause_graph(wait)
+                        deferred = True
+                        log.warning(
+                            "Subscription throttled user=%s resource=%s retry_after_s=%.1f",
+                            user_id,
+                            resource,
+                            wait,
+                        )
+                        break
                     errors.append(
                         "ACCESS_REQUIRED"
                         if error.response.status_code in {401, 403}
@@ -166,8 +192,12 @@ async def renew_subscriptions(graph: GraphClient, store: Store, force: bool = Fa
                         type(error).__name__,
                         error,
                     )
+        if deferred:
+            deferred_users.add(user_id)
         if errors:
             store.status(user_id, "ACCESS_REQUIRED" if "ACCESS_REQUIRED" in errors else errors[0])
+        elif deferred:
+            pass
         elif store.user(user_id)["status"] not in {"ACCESS_REQUIRED", "MISSED_EVENTS"}:
             store.status(user_id, "LISTENING")
 
@@ -179,3 +209,8 @@ async def renew_subscriptions(graph: GraphClient, store: Store, force: bool = Fa
         force,
     )
     await asyncio.gather(*(process_user(user_id) for user_id in sorted(due_by_user)))
+    if deferred_users:
+        log.warning(
+            "Subscription renewal deferred by throttling user_count=%s", len(deferred_users)
+        )
+    return len(deferred_users)

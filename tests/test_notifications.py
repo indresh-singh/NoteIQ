@@ -66,7 +66,9 @@ def test_unrelated_created_resource_is_rejected_without_becoming_an_insight(clie
 
 
 def test_unsupported_resource_shape_is_structural_and_redacts_identifiers(config, samples):
-    resource = "copilot/users/sensitive-user/onlineMeetings('sensitive-meeting')/aiInsights('secret')"
+    resource = (
+        "copilot/users/sensitive-user/onlineMeetings('sensitive-meeting')/aiInsights('secret')"
+    )
     samples["notification"]["value"][0]["resource"] = resource
     with pytest.raises(UnsupportedNotificationResource) as error:
         validate_notifications(samples["notification"], config)

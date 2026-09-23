@@ -675,6 +675,61 @@ class Store:
             ).fetchone()
         return json.loads(row["value"]) if row else None
 
+    def claim(self, kind: str, key: str, value: dict, ttl: int) -> bool:
+        """Take kind/key only while nobody holds a live one: a lock shared by replicas.
+
+        Check and write are one statement, so two requests arriving together
+        cannot both see it free. An expired holder is taken over rather than
+        waited on, which is what keeps a crashed request from locking the key
+        forever.
+        """
+        now = time.time()
+        with self.connect() as db:
+            row = db.execute(
+                """INSERT INTO temporary(kind, key, value, expires) VALUES (?, ?, ?, ?)
+                ON CONFLICT(kind, key) DO UPDATE SET value=excluded.value,
+                expires=excluded.expires WHERE temporary.expires < ?
+                RETURNING value""",
+                (kind, key, json.dumps(value), now + ttl, now),
+            ).fetchone()
+        return row is not None
+
+    def release(self, kind: str, key: str, value: dict) -> bool:
+        """Drop a claim, but only the one this caller took.
+
+        A holder that overran its ttl may already have been replaced; matching
+        on the value it wrote keeps it from releasing its successor's claim.
+        """
+        with self.connect() as db:
+            return (
+                db.execute(
+                    "DELETE FROM temporary WHERE kind=? AND key=? AND value=?",
+                    (kind, key, json.dumps(value)),
+                ).rowcount
+                > 0
+            )
+
+    def pause_graph(self, seconds: float) -> None:
+        """Record that Graph throttled the tenant, for every worker and replica to honour.
+
+        Graph's limits are per tenant, so the pause is too. A pause is only ever
+        extended: a short Retry-After arriving after a long one must not cut
+        the longer one short.
+        """
+        until = time.time() + seconds
+        with self.connect() as db:
+            db.execute(
+                """INSERT INTO temporary(kind, key, value, expires) VALUES (?, ?, ?, ?)
+                ON CONFLICT(kind, key) DO UPDATE SET value=excluded.value,
+                expires=excluded.expires WHERE temporary.expires < excluded.expires""",
+                ("graph", "throttled", json.dumps({"until": until}), until),
+            )
+
+    def graph_paused_until(self) -> float:
+        """When the current Graph throttle pause ends, or 0 when there is none."""
+        pause = self.get("graph", "throttled")
+        return pause["until"] if pause else 0.0
+
     def enroll(self, user_id: str, name: str):
         with self.connect() as db:
             db.execute(
@@ -783,6 +838,26 @@ class Store:
                 (force, time.time() + within_minutes * 60),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def flag_delayed_updates(self, within_seconds: float) -> list[str]:
+        """Mark users UPDATES_DELAYED once a subscription has lapsed or is about to.
+
+        Read from the stored expiry rather than from renewal errors, so it holds
+        even while throttling keeps renewal from running at all. Normal renewal
+        keeps every subscription at least 45 minutes from expiry, so reaching
+        this means renewal has been failing for a while. Only the healthy
+        statuses are replaced: a more specific problem already on screen stays.
+        A successful renewal sets LISTENING again.
+        """
+        with self.connect() as db:
+            rows = db.execute(
+                """UPDATE users SET status='UPDATES_DELAYED'
+                WHERE enabled=1 AND status IN ('LISTENING', 'CONNECTING')
+                AND id IN (SELECT user_id FROM subscriptions WHERE expires_at <= ?)
+                RETURNING id""",
+                (time.time() + within_seconds,),
+            ).fetchall()
+        return [row["id"] for row in rows]
 
     def save_clickup(self, user_id: str, token: str, workspaces: list[dict]):
         with self.connect() as db:
@@ -1057,26 +1132,33 @@ class Store:
             db.execute("UPDATE jobs SET status=? WHERE id=?", (status, job_id))
         log.info("Job persisted id=%s status=%s", job_id, status)
 
-    def retry_job(self, job: dict):
-        attempts = job["attempts"] + 1
-        delay = min(30 * 2**attempts, 900)
+    def retry_job(self, job: dict, *, throttled_until: float | None = None):
+        """Put a failed job back with backoff, or give up after five attempts.
+
+        throttled_until means Graph throttled the job rather than the job
+        failing: it runs again exactly when Graph said it may, and the attempt
+        is not counted, so a long throttle cannot exhaust a job that has
+        nothing wrong with it.
+        """
+        if throttled_until is not None:
+            attempts = job["attempts"]
+            due = max(throttled_until, time.time())
+        else:
+            attempts = job["attempts"] + 1
+            due = time.time() + min(30 * 2**attempts, 900)
         status = "failed" if attempts >= 5 else "pending"
         with self.connect() as db:
             db.execute(
                 "UPDATE jobs SET attempts=?, due=?, status=? WHERE id=?",
-                (
-                    attempts,
-                    time.time() + delay,
-                    status,
-                    job["id"],
-                ),
+                (attempts, due, status, job["id"]),
             )
         log.warning(
-            "Job retry persisted id=%s attempts=%s status=%s delay_s=%s",
+            "Job retry persisted id=%s attempts=%s status=%s delay_s=%.1f throttled=%s",
             job["id"],
             attempts,
             status,
-            delay,
+            due - time.time(),
+            throttled_until is not None,
         )
 
     def next_notification(self) -> dict | None:

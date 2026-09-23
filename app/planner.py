@@ -18,7 +18,7 @@ from urllib.parse import quote, urlencode
 import httpx
 
 from app.config import Settings
-from app.graph_client import GraphClient
+from app.graph_client import GraphBusy, GraphClient, busy_from
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +54,9 @@ async def _call(coro):
     try:
         return await coro
     except httpx.HTTPStatusError as error:
+        busy = busy_from(error)
+        if busy is not None:
+            raise busy from None
         status = error.response.status_code
         if status in (401, 403):
             raise ValueError(
@@ -135,9 +138,10 @@ class Planner:
                     json={"description": description[:20_000]},
                 )
             )
-        except ValueError as error:
+        except (ValueError, GraphBusy) as error:
             # The task itself was created; missing its notes is not a failed
-            # export, so this is logged and swallowed rather than raised.
+            # export, so this is logged and swallowed rather than raised --
+            # throttling included, or a retry would create the task twice.
             log.warning("Planner task description not set task_id=%s error=%s", task_id[:12], error)
         return {
             "id": task_id,
@@ -164,6 +168,9 @@ class Planner:
             await self.graph.request("GET", f"/planner/tasks/{quote(task_id, safe='')}")
             return True
         except httpx.HTTPStatusError as error:
+            busy = busy_from(error)
+            if busy is not None:
+                raise busy from None
             if error.response.status_code == 404:
                 return False
             raise ValueError(

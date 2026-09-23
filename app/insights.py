@@ -60,7 +60,13 @@ async def process_insight(event: InsightEvent, graph: GraphClient, store: Store)
                 queue_notification(
                     store, user_id, f"insight:{event.meeting_id}", subject, INSIGHTS_READY
                 )
-                if store.user(user_id)["status"] not in {"MISSED_EVENTS", "ACCESS_REQUIRED"}:
+                # UPDATES_DELAYED is about the subscription, which only a
+                # successful renewal fixes; one saved insight does not.
+                if store.user(user_id)["status"] not in {
+                    "MISSED_EVENTS",
+                    "ACCESS_REQUIRED",
+                    "UPDATES_DELAYED",
+                }:
                     store.status(user_id, "LISTENING")
     except httpx.HTTPStatusError as error:
         if retryable(error) or error.response.status_code == 404:

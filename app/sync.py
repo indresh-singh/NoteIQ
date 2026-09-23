@@ -1,5 +1,6 @@
 """Discover missed transcripts and repair saved meeting artifacts."""
 
+import asyncio
 import logging
 import time
 from datetime import datetime, timedelta, timezone
@@ -23,6 +24,23 @@ log = logging.getLogger(__name__)
 # How far back any sweep or manual refresh looks. Graph's own transcript
 # discovery is bounded to the same window.
 RECENT_SECONDS = 7 * 86400
+
+# Manual Refresh runs inline so a click brings results back in the same
+# request, which means its cost has to be bounded as meetings and users grow:
+# - REFRESH_LANES meetings are checked at once for one person, instead of one
+#   after another;
+# - REFRESH_GRAPH_SLOTS caps those checks across everyone refreshing on one
+#   replica, so a crowd of clicks cannot starve the worker's share of the
+#   Graph connection pool (GraphClient allows 20);
+# - REFRESH_DEADLINE_SECONDS stops a Refresh that is still going, leaving the
+#   meetings it did not reach to the background sweep.
+# The deadline sits below the browser's Refresh timeout (90s in web/app.js) so
+# the answer always arrives, and below REFRESH_LOCK_SECONDS so a Refresh can
+# never outlive the per-user lock that stops a second one from starting.
+REFRESH_LANES = 4
+REFRESH_GRAPH_SLOTS = 8
+REFRESH_DEADLINE_SECONDS = 80
+REFRESH_LOCK_SECONDS = 120
 
 NOT_ORGANIZER_MESSAGE = (
     "This meeting was found, but you are not its organizer. NoteIQ can only retrieve "
@@ -84,7 +102,12 @@ def queue_sync(store, user_id, *, discover=False, within_window=True):
     return len(payloads)
 
 
-async def discover_meetings(event, graph, store):
+async def discover_meetings(event, graph, store, found: dict | None = None):
+    """Queue every transcript Graph holds for this organizer that we do not.
+
+    found, when given, is incremented with how many of those belong to meetings
+    NoteIQ has never saved -- what Refresh reports as a new meeting.
+    """
     user_id = str(event.user_id)
     user = store.user(user_id)
     if not user or not user["enabled"]:
@@ -111,6 +134,7 @@ async def discover_meetings(event, graph, store):
     # on one id alone re-fetches -- and re-summarises -- what we already hold.
     known = store.transcript_aliases(user_id)
     payloads = []
+    new_meetings = set()
     for item in items:
         owner = ((item.get("meetingOrganizer") or {}).get("user") or {}).get("id")
         if owner and owner.lower() != user_id:
@@ -125,15 +149,34 @@ async def discover_meetings(event, graph, store):
                     user_id=user_id, meeting_id=meeting_id, transcript_id=transcript_id
                 ).model_dump_json()
             )
+            if found is not None and store.find_meeting(user_id, meeting_id) is None:
+                new_meetings.add(meeting_id)
     store.enqueue(payloads)
+    if found is not None:
+        found["new_meetings"] += len(new_meetings)
     log.info(
-        "Transcript discovery user=%s available=%s queued=%s", user_id, len(items), len(payloads)
+        "Transcript discovery user=%s available=%s queued=%s new_meetings=%s",
+        user_id,
+        len(items),
+        len(payloads),
+        len(new_meetings),
     )
     return "DISCOVERED"
 
 
-async def sync_now(store, graph, user_id: str) -> int:
-    """Check Graph for new transcripts/insights immediately, in this request.
+def _throttled(error: Exception) -> bool:
+    return isinstance(error, httpx.HTTPStatusError) and error.response.status_code == 429
+
+
+async def sync_now(
+    store,
+    graph,
+    user_id: str,
+    *,
+    slots: asyncio.Semaphore | None = None,
+    deadline: float = REFRESH_DEADLINE_SECONDS,
+) -> dict:
+    """Check Graph for new meetings and insights immediately, in this request.
 
     Used by the manual Refresh button so a click reflects Graph's current
     state right away, instead of only queuing a UserSync job for the
@@ -141,39 +184,110 @@ async def sync_now(store, graph, user_id: str) -> int:
     finds is still queued for content-fetch (process_transcript/process_insight)
     so retries and backoff keep working the same way they do for webhook-driven
     events; only the "is there anything new?" discovery step runs inline here.
+
+    Returns what the person is told: new_meetings and new_insights, counted
+    where they are found rather than inferred from queue depth, which a
+    concurrently running worker changes underneath. A new transcript for a
+    meeting already on screen is fetched but deliberately not counted.
+    complete is False when the deadline or Graph throttling stopped the check
+    early; the sweep reaches the rest within minutes.
     """
-    before = store.pending_job_count()
-    try:
-        await discover_meetings(UserSync(user_id=user_id), graph, store)
-    except Exception as error:
-        log.exception(
-            "Immediate sync discovery failed user=%s error_type=%s error=%s",
-            user_id,
-            type(error).__name__,
-            error,
-        )
+    started = time.monotonic()
+    slots = slots or asyncio.Semaphore(REFRESH_LANES)
+    found = {"new_meetings": 0, "new_insights": 0}
     # Deliberately exhaustive, unlike the background sweep: a person clicking
     # Refresh is asking for every recent meeting to be re-checked, including
-    # settled ones and ones past the publication window. Only the reading of it
-    # is cheaper now -- the candidate list comes from indexed columns instead of
-    # every saved card.
-    for meeting_id in store.sync_candidates(
+    # settled ones and ones past the publication window. Newest first, so a
+    # deadline cuts off the meetings least likely to have anything new.
+    meeting_ids = store.sync_candidates(
         user_id,
         since=time.time() - RECENT_SECONDS,
         within_window=False,
         only_unsettled=False,
-    ):
+    )
+    pending = iter(meeting_ids)
+    checked = 0
+
+    def paused() -> bool:
+        # Set by any 429 -- this Refresh's, the worker's, another replica's.
+        return store.graph_paused_until() > time.time()
+
+    # Graph is already throttling the tenant: asking again only extends it.
+    throttled = paused()
+
+    async def discover():
+        nonlocal throttled
+        if throttled:
+            return
         try:
-            await sync_meeting(MeetingSync(user_id=user_id, meeting_id=meeting_id), graph, store)
+            async with slots:
+                await discover_meetings(UserSync(user_id=user_id), graph, store, found)
         except Exception as error:
+            throttled = throttled or _throttled(error)
             log.exception(
-                "Immediate meeting sync failed user=%s meeting=%s error_type=%s error=%s",
+                "Immediate sync discovery failed user=%s error_type=%s error=%s",
                 user_id,
-                digest(meeting_id)[:8],
                 type(error).__name__,
                 error,
             )
-    return store.pending_job_count() - before
+
+    async def lane():
+        nonlocal checked, throttled
+        # Lanes share one iterator, so each meeting is checked exactly once.
+        for meeting_id in pending:
+            # Graph's throttling is per tenant: once it says slow down, more
+            # calls only lengthen the penalty, so the sweep takes over.
+            if throttled or paused():
+                throttled = True
+                return
+            try:
+                async with slots:
+                    await sync_meeting(
+                        MeetingSync(user_id=user_id, meeting_id=meeting_id), graph, store, found
+                    )
+            except Exception as error:
+                throttled = throttled or _throttled(error)
+                log.exception(
+                    "Immediate meeting sync failed user=%s meeting=%s error_type=%s error=%s",
+                    user_id,
+                    digest(meeting_id)[:8],
+                    type(error).__name__,
+                    error,
+                )
+            checked += 1
+
+    timed_out = False
+    try:
+        async with asyncio.timeout(deadline):
+            if not throttled:
+                await asyncio.gather(
+                    discover(), *(lane() for _ in range(min(REFRESH_LANES, len(meeting_ids))))
+                )
+    except TimeoutError:
+        timed_out = True
+    result = {
+        **found,
+        "checked": checked,
+        "total": len(meeting_ids),
+        "complete": not timed_out and not throttled,
+        "throttled": throttled,
+        # How long until Graph allows calls again, for "try again in ..." text.
+        "retry_after": max(round(store.graph_paused_until() - time.time()), 0),
+    }
+    log.info(
+        "Refresh completed user=%s checked=%s total=%s new_meetings=%s new_insights=%s "
+        "complete=%s timed_out=%s throttled=%s duration_ms=%d",
+        user_id,
+        checked,
+        len(meeting_ids),
+        found["new_meetings"],
+        found["new_insights"],
+        result["complete"],
+        timed_out,
+        throttled,
+        (time.monotonic() - started) * 1000,
+    )
+    return result
 
 
 def _organizer_id(meeting: dict) -> str:
@@ -356,7 +470,12 @@ async def recover_from_link(store, graph, user_id, meeting_url):
     return result
 
 
-async def sync_meeting(event, graph, store):
+async def sync_meeting(event, graph, store, found: dict | None = None):
+    """Queue any transcript or insight Graph holds for one meeting that we do not.
+
+    found, when given, is incremented with the new insights -- what Refresh
+    reports. New transcripts are queued the same way but not counted.
+    """
     user_id = str(event.user_id)
     user = store.user(user_id)
     if not user or not user["enabled"]:
@@ -436,6 +555,8 @@ async def sync_meeting(event, graph, store):
             known.update(item[kind].get("source_id") for item in saved.get(kind + "s", []))
             items = await graph.list(resource)
             fresh = [item["id"] for item in items if item["id"] not in known]
+            if found is not None and kind == "insight":
+                found["new_insights"] += len(fresh)
             store.enqueue(
                 [
                     model(

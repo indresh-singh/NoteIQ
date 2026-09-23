@@ -1,10 +1,12 @@
 """Teams tab, Microsoft sign-in, and Graph webhook in one local web server."""
 
 import asyncio
+import functools
 import hashlib
 import hmac
 import html
 import logging
+import math
 import secrets
 import time
 from contextlib import asynccontextmanager, suppress
@@ -13,10 +15,17 @@ from typing import Literal
 from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -24,7 +33,7 @@ from app.adaptive_cards import build_card
 from app.auth import identity_client
 from app.clickup import ClickUp
 from app.config import ROOT, Settings, settings
-from app.graph_client import GraphClient
+from app.graph_client import GraphBusy, GraphClient, busy_from, interactive_requests
 from app.models import InsightEvent, TranscriptEvent, UserSync, parse_event
 from app.notifications import validate_notifications
 from app.observability import log_context, safe_correlation_id
@@ -33,6 +42,7 @@ from app.openrouter import MAX_TRANSCRIPT_CHARS, OpenRouter
 from app.planner import Planner
 from app.store import Store, digest
 from app.subscriptions import resource_owner
+from app.sync import REFRESH_GRAPH_SLOTS, REFRESH_LOCK_SECONDS
 from app.transcripts import meeting_transcript_text, summarize_with_ai
 from app.worker import run_worker
 
@@ -163,6 +173,10 @@ def create_app(
                 app.state.config.database_url,
             )
             app.state.graph = graph or GraphClient()
+            if isinstance(app.state.graph, GraphClient):
+                # Every 429, from any caller, pauses the tenant's Graph work;
+                # see Store.pause_graph.
+                app.state.graph.on_throttle = app.state.store.pause_graph
             app.state.clickup = (
                 ClickUp(app.state.config) if app.state.config.clickup_enabled else None
             )
@@ -175,6 +189,8 @@ def create_app(
             # at the point of use instead.
             app.state.planner = Planner(app.state.config, app.state.graph)
             app.state.repair = asyncio.Event()
+            # Shared by every Refresh on this replica: see REFRESH_GRAPH_SLOTS.
+            app.state.refresh_slots = asyncio.Semaphore(REFRESH_GRAPH_SLOTS)
             task = (
                 asyncio.create_task(
                     run_worker(app.state.store, app.state.graph, app.state.repair),
@@ -291,6 +307,20 @@ def create_app(
                 response.headers.get("content-length", "-"),
             )
             return response
+
+    @app.exception_handler(GraphBusy)
+    async def graph_busy(request: Request, error: GraphBusy):
+        log.warning(
+            "Graph busy response method=%s path=%s retry_after_s=%s",
+            request.method,
+            request.url.path,
+            error.retry_after,
+        )
+        return JSONResponse(
+            {"detail": str(error)},
+            status_code=429,
+            headers={"Retry-After": str(error.retry_after)},
+        )
 
     @app.exception_handler(HTTPException)
     async def log_http_exception(request: Request, error: HTTPException):
@@ -443,6 +473,11 @@ def create_app(
         return {
             **{key: user[key] for key in ("id", "name", "status")},
             "notifications": "DELIVERY_ERROR" if failed else "READY",
+            # Seconds left on a tenant-wide Graph throttle pause, 0 when none:
+            # the tab shows that updates are delayed, and re-reads when it ends.
+            "graph_throttled_seconds": math.ceil(
+                max(request.app.state.store.graph_paused_until() - time.time(), 0)
+            ),
             "summary_provider": request.app.state.config.summary_provider,
             "summary_providers": request.app.state.config.summary_providers,
             "clickup": {
@@ -704,7 +739,27 @@ def create_app(
             "plans": [{**item, "is_default": item["plan_id"] == default_id} for item in plans],
         }
 
+    def graph_action(endpoint):
+        """For a button that calls Graph while the person waits.
+
+        While Graph is throttling the tenant, answer at once with "try again
+        in N seconds" instead of adding to the throttle; otherwise let a 429
+        wait only a few seconds before saying the same.
+        """
+
+        @functools.wraps(endpoint)
+        async def wrapper(*args, **kwargs):
+            store = kwargs["request"].app.state.store
+            wait = store.graph_paused_until() - time.time()
+            if wait > 0:
+                raise GraphBusy(wait)
+            with interactive_requests():
+                return await endpoint(*args, **kwargs)
+
+        return wrapper
+
     @app.get("/api/planner/available-plans")
+    @graph_action
     async def planner_available_plans(request: Request, user: dict = Depends(current_user)):
         client = request.app.state.planner
         try:
@@ -717,6 +772,7 @@ def create_app(
         return {"plans": plans}
 
     @app.post("/api/planner/plans")
+    @graph_action
     async def planner_add_plan(
         body: PlannerPlan, request: Request, user: dict = Depends(current_user)
     ):
@@ -757,6 +813,7 @@ def create_app(
         return {"status": "removed"}
 
     @app.get("/api/planner/tasks")
+    @graph_action
     async def planner_tasks_list(
         plan_id: str, request: Request, user: dict = Depends(current_user)
     ):
@@ -778,6 +835,7 @@ def create_app(
         return {"tasks": tasks}
 
     @app.post("/api/meetings/{meeting_id}/planner")
+    @graph_action
     async def export_planner(
         meeting_id: int,
         body: PlannerExport,
@@ -849,6 +907,16 @@ def create_app(
                     raise
                 store.save_planner_task(user["id"], action_key, task)
                 created += 1
+        except GraphBusy as busy:
+            if not created:
+                raise
+            # Exports are de-duplicated per action item, so trying again
+            # sends only what is left.
+            raise GraphBusy(
+                busy.retry_after,
+                before=f"Sent {created} task{'' if created == 1 else 's'} to Planner. ",
+                after=" Tasks already sent won't be sent twice.",
+            ) from None
         except ValueError as error:
             log.warning(
                 "Planner export failed user=%s meeting_row=%s plan_id=%s created=%s "
@@ -887,6 +955,11 @@ def create_app(
             raise HTTPException(409, "Configure the selected AI provider to analyze uploaded transcripts.")
         if not body.filename.lower().endswith((".docx", ".txt", ".vtt", ".srt")):
             raise HTTPException(400, "Upload a Teams .docx or UTF-8 .txt, .vtt or .srt file.")
+            raise HTTPException(
+                409, "Configure the selected AI provider to analyze uploaded transcripts."
+            )
+        if not body.filename.lower().endswith((".txt", ".vtt", ".srt")):
+            raise HTTPException(400, "Upload a UTF-8 .txt, .vtt or .srt file.")
         if not body.subject.strip() or not body.text.strip() or "\x00" in body.text:
             raise HTTPException(400, "Provide a title and a non-empty text transcript.")
         meeting_key = "upload:" + secrets.token_hex(16)
@@ -948,9 +1021,7 @@ def create_app(
         config = settings()
         provider = body.provider or config.summary_provider
         if provider not in config.external_summary_providers:
-            raise HTTPException(
-                409, "Configure the selected AI provider to regenerate insights."
-            )
+            raise HTTPException(409, "Configure the selected AI provider to regenerate insights.")
         transcripts = meeting["content"].get("transcripts") or []
         if not transcripts:
             raise HTTPException(409, "No transcript available to summarize yet.")
@@ -976,14 +1047,40 @@ def create_app(
     async def sync(request: Request, user: dict = Depends(current_user)):
         from app.sync import sync_now
 
-        # Refresh asks Graph what is new; it does not force a subscription
-        # repair. Forcing one PATCHes every subscription ahead of the fetch the
-        # click is waiting for. Renewal still runs on its own schedule, and
-        # /api/reconnect remains the explicit repair path.
-        queued = await sync_now(request.app.state.store, request.app.state.graph, user["id"])
-        return {"queued": queued}
+        store = request.app.state.store
+        # One Refresh per person at a time, across tabs and replicas. A second
+        # click -- typically from a second tab -- would repeat every Graph call
+        # the first is already making; it is told to wait for that one instead.
+        run = {"run": secrets.token_hex(8), "started": time.time()}
+        if not store.claim("refresh_lock", user["id"], run, ttl=REFRESH_LOCK_SECONDS):
+            log.info("Refresh already running user=%s", user["id"])
+            return {"status": "already_running"}
+        try:
+            # Refresh asks Graph what is new; it does not force a subscription
+            # repair. Forcing one PATCHes every subscription ahead of the fetch
+            # the click is waiting for. Renewal still runs on its own schedule,
+            # and /api/reconnect remains the explicit repair path.
+            result = await sync_now(
+                store, request.app.state.graph, user["id"], slots=request.app.state.refresh_slots
+            )
+            result["finished"] = time.time()
+            # Kept for a tab that was told already_running, or reloaded while
+            # this ran, to read the outcome from /api/sync/status.
+            store.put("refresh_result", user["id"], result, ttl=600)
+        finally:
+            store.release("refresh_lock", user["id"], run)
+        return {"status": "completed", **result}
+
+    @app.get("/api/sync/status")
+    async def sync_status(request: Request, user: dict = Depends(current_user)):
+        store = request.app.state.store
+        return {
+            "running": store.get("refresh_lock", user["id"]) is not None,
+            "result": store.get("refresh_result", user["id"]),
+        }
 
     @app.post("/api/recover-meeting")
+    @graph_action
     async def recover_meeting(
         body: MeetingRecovery, request: Request, user: dict = Depends(current_user)
     ):
@@ -993,6 +1090,11 @@ def create_app(
             result = await recover_from_link(
                 request.app.state.store, request.app.state.graph, user["id"], body.meeting_url
             )
+        except httpx.HTTPStatusError as error:
+            busy = busy_from(error)
+            if busy is None:
+                raise
+            raise busy from None
         except ValueError as error:
             log.warning(
                 "Meeting recovery input rejected user=%s url_chars=%s error=%s",
@@ -1007,8 +1109,7 @@ def create_app(
         if not result.get("eligible", 1):
             status = (
                 403
-                if result.get("skipped_not_organizer")
-                or result.get("skipped_access_denied")
+                if result.get("skipped_not_organizer") or result.get("skipped_access_denied")
                 else 409
             )
             raise HTTPException(status, result["message"])

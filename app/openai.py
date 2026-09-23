@@ -146,7 +146,9 @@ class OpenAI:
                 if error.response.status_code in {401, 403}:
                     raise ValueError("OpenAI rejected this API key.") from None
                 if error.response.status_code == 429:
-                    raise ValueError("OpenAI is rate-limited; the next request is delayed.") from None
+                    raise ValueError(
+                        "OpenAI is rate-limited; the next request is delayed."
+                    ) from None
                 raise ValueError("OpenAI could not complete this request.") from None
             except httpx.HTTPError as error:
                 log.warning(
