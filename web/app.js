@@ -310,7 +310,8 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
       }
     };
 
-    const buttons = element("div", "", "buttons");
+    const buttons = element("div", "", "buttons tab-buttons");
+    const actionButtons = element("div", "", "buttons action-buttons");
     const content = element("div", "", "card-content");
     for (const [label, heading] of [["Summary", "KEY NOTES"], ["Action items", "ACTION ITEMS"]]) {
       const button = element("button", label);
@@ -382,9 +383,9 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
         option.selected = item.is_default;
         picker.append(option);
       }
-      buttons.append(picker);
+      actionButtons.append(picker);
     }
-    const clickupButton = element("button", "", "clickup-button");
+    const clickupButton = element("button", "", "clickup-button send-button");
     clickupButton.dataset.clickup = "true";
     clickupButton.hidden = true;
     const clickupIcon = document.createElement("img");
@@ -401,7 +402,7 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
         clickupLabel.textContent = result.created ? `${result.created} task${result.created === 1 ? "" : "s"} sent` : "Already sent";
       } catch (error) { showError(error.message); clickupButton.disabled = false; }
     };
-    buttons.append(clickupButton);
+    actionButtons.append(clickupButton);
 
     const plans = planner?.plans || [];
     let plannerPicker = null;
@@ -415,20 +416,26 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
         option.selected = item.is_default;
         plannerPicker.append(option);
       }
-      buttons.append(plannerPicker);
+      actionButtons.append(plannerPicker);
     }
-    const plannerButton = element("button", "Send action items to Planner", "clickup-button");
+    const plannerButton = element("button", "", "clickup-button send-button");
     plannerButton.dataset.planner = "true";
     plannerButton.hidden = true;
+    const plannerIcon = document.createElement("img");
+    plannerIcon.src = "/static/planner.svg";
+    plannerIcon.alt = "";
+    const plannerDefaultLabel = "Send action items to Planner";
+    const plannerLabel = element("span", plannerDefaultLabel);
+    plannerButton.append(plannerIcon, plannerLabel);
     plannerButton.onclick = async () => {
       plannerButton.disabled = true;
       try {
         const body = {provider: selected, ...(plannerPicker ? {plan_id: plannerPicker.value} : {})};
         const result = await api(`/api/meetings/${meeting.id}/planner`, body);
-        plannerButton.textContent = result.created ? `${result.created} task${result.created === 1 ? "" : "s"} sent` : "Already sent";
+        plannerLabel.textContent = result.created ? `${result.created} task${result.created === 1 ? "" : "s"} sent` : "Already sent";
       } catch (error) { showError(error.message); plannerButton.disabled = false; }
     };
-    buttons.append(plannerButton);
+    actionButtons.append(plannerButton);
 
     // Export only ever sends whichever provider's items are on screen right
     // now, so the count on the button always matches what was just clicked.
@@ -449,7 +456,7 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
         plannerPicker.dataset.hasActions = String(plannerVisible);
         plannerPicker.hidden = !plannerVisible;
       }
-      plannerButton.textContent = "Send action items to Planner";
+      plannerLabel.textContent = plannerDefaultLabel;
     }
     updateExportVisibility();
     if (custom) {
@@ -469,17 +476,19 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
         }
         article.append(section);
       }
-      const exportActions = element("div", "", "buttons");
+      const exportActions = element("div", "", "buttons action-buttons");
       if (picker) exportActions.append(picker);
       exportActions.append(clickupButton);
       if (plannerPicker) exportActions.append(plannerPicker);
       exportActions.append(plannerButton);
-      article.append(exportActions);
+      if (lists.length || plans.length) article.append(exportActions);
       if (!lists.length && !plans.length) article.append(element("p", "Connect ClickUp or add a Microsoft Planner plan in Account settings to create tasks.", "hint"));
       target.append(article);
       continue;
     }
-    article.append(buttons, content, footerLine);
+    article.append(buttons);
+    if (lists.length || plans.length) article.append(actionButtons);
+    article.append(content, footerLine);
     updateProviderText();
     updateToggle();
     target.append(article);

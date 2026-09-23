@@ -15,7 +15,7 @@
 
 #clickup-settings,#planner-settings{margin:20px 0 24px;padding:26px 28px;border:1px solid var(--line);border-radius:14px;background:var(--paper)}
 #clickup-settings h2,#planner-settings h2{display:flex;align-items:center;gap:9px;font-size:16px;margin:0 0 10px;letter-spacing:-.2px}
-#clickup-settings h2 .clickup-icon{width:18px;height:18px}
+#clickup-settings h2 .clickup-icon,#planner-settings h2 .clickup-icon{width:18px;height:18px}
 #clickup-settings #clickup-status,#planner-settings #planner-status{margin:0 0 18px;font-size:13px;color:var(--muted);line-height:1.5}
 #clickup-settings #clickup-connect{display:inline-flex;align-items:center;gap:8px;background:var(--accent);color:#fff;border-color:var(--accent);padding:10px 20px}
 #clickup-settings #clickup-connect:hover{opacity:.9;color:#fff}
@@ -44,6 +44,19 @@
 .clickup-button{display:inline-flex;align-items:center;gap:8px}
 .clickup-button img{width:15px;height:15px}
 .clickup-list-picker{height:36px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--text);font:inherit;font-size:13px}
+
+.meeting .tab-buttons::before,.meeting .action-buttons::before{content:"Meeting";display:block;width:100%;font-size:11px;font-weight:700;letter-spacing:.7px;text-transform:uppercase;color:var(--muted)}
+.meeting .action-buttons::before{content:"Actions"}
+.meeting .action-buttons{margin-top:0;padding-top:14px;border-top:1px dashed var(--line)}
+.send-button{background:#1f9254;color:#fff;border-color:#1f9254}
+.send-button:hover{background:#177a44;border-color:#177a44;color:#fff}
+.send-button:disabled{opacity:.5}
+body.dark .send-button{background:#2fae68;border-color:#2fae68}
+body.dark .send-button:hover{background:#279457;border-color:#279457}
+body.contrast .send-button{background:#000;color:#0f0;border-color:#0f0}
+body.contrast .send-button:hover{background:#0f0;color:#000}
+#planner-settings #planner-connect{display:inline-flex;align-items:center;gap:8px}
+#planner-settings #planner-connect img{width:15px;height:15px}
 
 .recover-meeting{display:flex;flex-wrap:wrap;justify-content:center;align-items:stretch;gap:8px;margin:22px auto 28px;max-width:680px}.recover-meeting label{width:100%;font-size:12px;color:var(--muted)}.recover-meeting input{min-width:280px;flex:1;height:38px;padding:0 12px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--text);font:inherit;font-size:13px;box-sizing:border-box}.recover-meeting button{height:38px;padding:0 15px}
 .meeting-warning{margin:12px 0;padding:11px 13px;border-left:4px solid #c47b00;border-radius:6px;background:#fff7e6;color:#704800;font-size:13px}body.dark .meeting-warning{background:#3b3020;color:#ffd58a}body.contrast .meeting-warning{border:1px solid #fff;border-left-width:4px;background:#000;color:#fff}
