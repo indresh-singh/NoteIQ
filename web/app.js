@@ -159,6 +159,41 @@ function element(tag, text, className) {
   return node;
 }
 
+// Each List/Plan gets a distinct accent so several destinations stay easy to
+// tell apart at a glance, the way a colored left border sets task cards apart.
+const PICKER_COLORS = ["#2f9e64", "#4f6bed", "#c2740c", "#db2777", "#0891b2", "#8b5cf6"];
+
+function createOptionPicker(items, className) {
+  const picker = element("details", "", `option-picker ${className}`);
+  const summary = element("summary");
+  const swatch = element("span", "", "option-picker-swatch");
+  const label = element("span", "", "option-picker-label");
+  summary.append(swatch, label);
+  const list = element("ul", "", "option-picker-list");
+  const options = items.map((item, index) => {
+    const color = PICKER_COLORS[index % PICKER_COLORS.length];
+    const option = element("li", "", "option-picker-option");
+    option.setAttribute("role", "option");
+    option.style.setProperty("--picker-border", color);
+    option.append(element("span", item.label));
+    option.onclick = () => select(index);
+    list.append(option);
+    return option;
+  });
+  let selectedIndex = Math.max(0, items.findIndex((item) => item.selected));
+  function select(index) {
+    selectedIndex = index;
+    swatch.style.background = PICKER_COLORS[index % PICKER_COLORS.length];
+    label.textContent = items[index].label;
+    options.forEach((option, i) => option.setAttribute("aria-selected", String(i === index)));
+    picker.open = false;
+  }
+  select(selectedIndex);
+  picker.append(summary, list);
+  Object.defineProperty(picker, "value", {get: () => items[selectedIndex].value});
+  return picker;
+}
+
 function renderNote(note, hideTitle) {
   const line = element("span");
   if (note.title && !hideTitle) line.append(element("strong", note.title + ": "));
@@ -376,15 +411,12 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
     const lists = clickup?.lists || [];
     let picker = null;
     if (lists.length > 1) {
-      picker = element("select", "", "clickup-list-picker");
+      picker = createOptionPicker(
+        lists.map((item) => ({value: item.list_id, label: item.list_name, selected: item.is_default})),
+        "clickup-picker",
+      );
       picker.dataset.clickup = "true";
       picker.hidden = true;
-      for (const item of lists) {
-        const option = element("option", item.list_name);
-        option.value = item.list_id;
-        option.selected = item.is_default;
-        picker.append(option);
-      }
       actionButtons.append(picker);
     }
     const clickupButton = element("button", "", "clickup-button send-button");
@@ -409,15 +441,12 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
     const plans = planner?.plans || [];
     let plannerPicker = null;
     if (plans.length > 1) {
-      plannerPicker = element("select", "", "clickup-list-picker");
+      plannerPicker = createOptionPicker(
+        plans.map((item) => ({value: item.plan_id, label: item.plan_name, selected: item.is_default})),
+        "planner-picker",
+      );
       plannerPicker.dataset.planner = "true";
       plannerPicker.hidden = true;
-      for (const item of plans) {
-        const option = element("option", item.plan_name);
-        option.value = item.plan_id;
-        option.selected = item.is_default;
-        plannerPicker.append(option);
-      }
       actionButtons.append(plannerPicker);
     }
     const plannerButton = element("button", "", "clickup-button send-button");
