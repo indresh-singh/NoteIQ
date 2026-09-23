@@ -131,3 +131,26 @@ def test_postgres_backfills_rows_written_before_the_columns():
         ).fetchone()
     assert (row["meeting_id"], row["settled"]) == ("legacy", 1)
     store.disconnect(user_id)
+
+
+@pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="PostgreSQL is not configured")
+def test_postgres_due_subscriptions_binds_force_as_boolean():
+    """PostgreSQL rejects smallint parameters on the left side of OR."""
+    store = Store(Path("/tmp/unused.sqlite3"), database_url=os.environ["TEST_DATABASE_URL"])
+    user_id = str(uuid4())
+    store.enroll(user_id, "PostgreSQL subscription test")
+    future = time.time() + 3600
+    store.reconcile_subscriptions(
+        [
+            (user_id, "insights", "insights-sub", future),
+            (user_id, "transcripts", "transcripts-sub", future),
+        ]
+    )
+
+    assert store.due_subscriptions(force=False) == []
+    forced = store.due_subscriptions(force=True)
+    assert {(row["resource_kind"], row["subscription_id"]) for row in forced} == {
+        ("insights", "insights-sub"),
+        ("transcripts", "transcripts-sub"),
+    }
+    store.disconnect(user_id)

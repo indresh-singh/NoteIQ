@@ -30,12 +30,13 @@ def forbidden(message="Synthetic denial: production message unavailable"):
     )
 
 
-async def candidate_ensure(graph, active, resource, config, force):
+async def candidate_ensure(graph, config, resource, subscription_id):
     """Proposed guard: identify a callback conflict before attempting another POST.
 
     Never delete or take over the other callback automatically. Its operator must
     stop renewal and retire it (or use separate application registrations).
     """
+    active = graph.list.return_value
     target = config.public_url + "/api/graph/notifications"
     matching = [item for item in active if item.get("resource", "").lstrip("/") == resource]
     if matching and not any(item.get("notificationUrl") == target for item in matching):
@@ -50,7 +51,7 @@ async def candidate_ensure(graph, active, resource, config, force):
         raise ValueError(
             f"Subscription callback conflict: resource={resource} existing={conflicts}"
         )
-    await ensure_subscription(graph, active, resource, config, force)
+    return await ensure_subscription(graph, config, resource, subscription_id)
 
 
 async def test_incident_badge_and_copilot_content_can_coexist(samples, store):
@@ -72,6 +73,12 @@ async def test_badge_remains_after_healthy_renewal_until_reconnect(store):
     store.status(USER, "ACCESS_REQUIRED")
     graph = AsyncMock()
     graph.list.return_value = []
+    graph.request.side_effect = [
+        {"id": "insights"},
+        {"id": "transcripts"},
+        {},
+        {},
+    ]
     await renew_subscriptions(graph, store)
     assert store.user(USER)["status"] == "ACCESS_REQUIRED"
     # /api/reconnect performs this reset before asking the worker to renew.
@@ -112,16 +119,16 @@ async def test_foreign_callback_backtest(config, store, monkeypatch, caplog, can
     assert calls[-1].kwargs["json"]["resource"].endswith("getAllTranscripts")
 
 
-@pytest.mark.parametrize("minutes,force", [(50, False), (10, False), (50, True)])
-async def test_candidate_keeps_current_callback_renewal(config, minutes, force):
+async def test_candidate_keeps_current_callback_renewal(config):
     graph = AsyncMock()
-    existing = subscription(config, minutes)
-    await candidate_ensure(graph, [existing], existing["resource"].lstrip("/"), config, force)
-    if minutes == 50 and not force:
-        graph.request.assert_not_awaited()
-    else:
-        graph.request.assert_awaited_once()
-        assert graph.request.call_args.args == ("PATCH", "/subscriptions/sub")
+    existing = subscription(config, 10)
+    graph.list.return_value = [existing]
+    renewed_id, _ = await candidate_ensure(
+        graph, config, existing["resource"].lstrip("/"), existing["id"]
+    )
+    assert renewed_id == "sub"
+    graph.request.assert_awaited_once()
+    assert graph.request.call_args.args == ("PATCH", "/subscriptions/sub")
 
 
 async def test_candidate_recovers_after_conflicting_subscription_is_retired(
@@ -131,6 +138,7 @@ async def test_candidate_recovers_after_conflicting_subscription_is_retired(
     store.status(USER, "CONNECTING")
     graph = AsyncMock()
     graph.list.return_value = []  # Simulate verified retirement, do not delete anything live.
+    graph.request.side_effect = [{"id": "insights"}, {"id": "transcripts"}]
     await renew_subscriptions(graph, store, force=True)
     assert graph.request.await_count == 2
     assert store.user(USER)["status"] == "LISTENING"

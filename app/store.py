@@ -755,7 +755,7 @@ class Store:
                 LEFT JOIN subscriptions s ON s.user_id = u.id AND s.resource_kind = k.kind
                 WHERE u.enabled = 1
                   AND (? OR s.expires_at IS NULL OR s.expires_at <= ?)""",
-                (1 if force else 0, time.time() + within_minutes * 60),
+                (force, time.time() + within_minutes * 60),
             ).fetchall()
         return [dict(row) for row in rows]
 
