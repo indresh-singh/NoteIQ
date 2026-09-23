@@ -4,7 +4,8 @@ import httpx
 import pytest
 
 from app.config import settings
-from app.openrouter import FREE_ROUTER_MODEL, OpenRouter, extract_json_object
+from app.openrouter import FREE_ROUTER_MODEL, MAX_OUTPUT_TOKENS, OpenRouter, extract_json_object
+from app.prompts.meeting_summary import MEETING_SUMMARY_SCHEMA
 
 
 def mock_client(monkeypatch, handle):
@@ -150,7 +151,7 @@ async def test_summarize_parses_reply_wrapped_in_markdown_fences(monkeypatch):
     assert insight.actionItems[0].ownerDisplayName == "Ada"
 
 
-async def test_summarize_does_not_request_structured_output_mode(monkeypatch):
+async def test_summarize_requires_structured_output_from_a_compatible_endpoint(monkeypatch):
     enable_openrouter(monkeypatch)
     payloads = []
 
@@ -163,7 +164,16 @@ async def test_summarize_does_not_request_structured_output_mode(monkeypatch):
 
     mock_client(monkeypatch, handle)
     await OpenRouter(settings()).summarize("transcript-1", "Budget review", "hello")
-    assert "response_format" not in payloads[0]
+    assert payloads[0]["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "meeting_summary",
+            "strict": True,
+            "schema": MEETING_SUMMARY_SCHEMA,
+        },
+    }
+    assert payloads[0]["provider"] == {"require_parameters": True}
+    assert payloads[0]["max_tokens"] == MAX_OUTPUT_TOKENS
 
 
 async def test_summarize_asks_the_model_to_disable_reasoning(monkeypatch):

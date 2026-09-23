@@ -17,7 +17,7 @@ from pydantic import ValidationError
 from app.config import Settings
 from app.models import Insight
 from app.observability import response_diagnostics
-from app.prompts.meeting_summary import SYSTEM_PROMPT, user_prompt
+from app.prompts.meeting_summary import MEETING_SUMMARY_SCHEMA, SYSTEM_PROMPT, user_prompt
 
 log = logging.getLogger(__name__)
 
@@ -28,39 +28,7 @@ MEETING_SUMMARY_FORMAT = {
     "type": "json_schema",
     "name": "meeting_summary",
     "strict": True,
-    "schema": {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "meetingNotes": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "title": {"type": ["string", "null"]},
-                        "text": {"type": ["string", "null"]},
-                    },
-                    "required": ["title", "text"],
-                },
-            },
-            "actionItems": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "title": {"type": ["string", "null"]},
-                        "text": {"type": ["string", "null"]},
-                        "ownerDisplayName": {"type": ["string", "null"]},
-                        "dueDate": {"type": ["string", "null"]},
-                    },
-                    "required": ["title", "text", "ownerDisplayName", "dueDate"],
-                },
-            },
-        },
-        "required": ["meetingNotes", "actionItems"],
-    },
+    "schema": MEETING_SUMMARY_SCHEMA,
 }
 _request_lock = asyncio.Lock()
 _next_request_at = 0.0

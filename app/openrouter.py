@@ -5,10 +5,9 @@ app/transcripts.py); this module sends that same text to a model hosted on
 OpenRouter to produce an extra meeting summary and action item list,
 alongside whatever Copilot's own aiInsights eventually deliver.
 
-Deliberately doesn't request OpenRouter's structured-outputs / JSON-schema
-mode: many free-tier models either ignore it or reject the request outright
-(some don't even honor plain response_format json_object), so this relies
-only on prompt instructions plus a permissive parser below.
+Requests OpenRouter's JSON-schema structured-output mode and restricts routing
+to provider endpoints that support it. The prompt repeats the shape as a
+defensive hint, while the permissive parser still handles harmless wrappers.
 """
 
 import json
@@ -22,12 +21,13 @@ from pydantic import ValidationError
 from app.config import Settings
 from app.models import Insight
 from app.observability import response_diagnostics
-from app.prompts.meeting_summary import SYSTEM_PROMPT, user_prompt
+from app.prompts.meeting_summary import MEETING_SUMMARY_SCHEMA, SYSTEM_PROMPT, user_prompt
 
 log = logging.getLogger(__name__)
 
 API = "https://openrouter.ai/api/v1/chat/completions"
 MAX_TRANSCRIPT_CHARS = 60_000
+MAX_OUTPUT_TOKENS = 1_200
 JSON_OBJECT_PATTERN = re.compile(r"\{.*\}", re.DOTALL)
 # OpenRouter's own router picks a healthy free model at request time.
 FREE_ROUTER_MODEL = "openrouter/free"
@@ -91,6 +91,19 @@ class OpenRouter:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt(subject, text)},
             ],
+            "max_tokens": MAX_OUTPUT_TOKENS,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "meeting_summary",
+                    "strict": True,
+                    "schema": MEETING_SUMMARY_SCHEMA,
+                },
+            },
+            # A model can have several provider endpoints with different
+            # capabilities. Do not silently route this request to an endpoint
+            # that ignores the schema.
+            "provider": {"require_parameters": True},
             # Reasoning models default to putting their answer in a separate
             # reasoning/reasoning_content field and leaving content empty; ask
             # for it to be turned off, and fall back to that field if a model
@@ -128,10 +141,19 @@ class OpenRouter:
             raise ValueError("OpenRouter did not return a usable summary.") from error
         try:
             insight = Insight.model_validate({**data, "id": f"openrouter:{key}"})
+            choice = (response.get("choices") or [{}])[0]
+            usage = response.get("usage") or {}
             log.info(
-                "OpenRouter summary completed model=%s duration_ms=%d notes=%s actions=%s",
+                "OpenRouter summary completed requested_model=%s actual_model=%s provider=%s "
+                "finish_reason=%s duration_ms=%d prompt_tokens=%s completion_tokens=%s "
+                "notes=%s actions=%s",
                 model,
+                response.get("model", "-"),
+                response.get("provider", "-"),
+                choice.get("finish_reason", "-"),
                 (time.monotonic() - started) * 1000,
+                usage.get("prompt_tokens", "-"),
+                usage.get("completion_tokens", "-"),
                 len(insight.meetingNotes),
                 len(insight.actionItems),
             )

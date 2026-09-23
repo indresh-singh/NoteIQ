@@ -196,6 +196,8 @@ def test_page_and_static_assets_are_public_but_data_is_protected(client, config)
     page = client.get("/")
     assert page.status_code == 200
     assert "Connect Microsoft 365" in page.text
+    assert 'id="planner-shortcut"' in page.text
+    assert 'id="planner-connect-label"' in page.text
     assert "frame-ancestors" in page.headers["content-security-policy"]
     assert "x-frame-options" not in page.headers
     assert page.headers["referrer-policy"] == "no-referrer"
@@ -203,6 +205,7 @@ def test_page_and_static_assets_are_public_but_data_is_protected(client, config)
     assert client.get("/static/vendor/teams.min.js").status_code == 200
     assert client.get("/static/vendor/adaptivecards.min.js").status_code == 200
     assert client.get("/static/vendor/mammoth.browser.min.js").status_code == 200
+    assert client.get("/static/planner.svg").status_code == 200
     assert client.get("/static/../.env").status_code == 404
     assert client.get("/api/messages").status_code == 404
     assert client.get("/api/me").status_code == 401

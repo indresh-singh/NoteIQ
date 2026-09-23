@@ -4,18 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NoteIQ · Meeting notes</title>
-  <link rel="stylesheet" href="/static/style.css?v=1.4.7">
+  <link rel="stylesheet" href="/static/style.css?v=1.4.8">
   <script src="/static/vendor/teams.min.js" defer></script>
   <script src="/static/vendor/adaptivecards.min.js" defer></script>
   <script src="/static/vendor/mammoth.browser.min.js" defer></script>
-  <script src="/static/app.js?v=1.5.6" defer></script>
+  <script src="/static/app.js?v=1.5.7" defer></script>
 </head>
 <body>
   <main>
     <header>
       <div class="brand"><span class="logo">N</span><div><strong>NoteIQ</strong><p>Your meetings, remembered.</p></div></div>
       <div class="header-actions">
-        <button id="clickup-shortcut" class="clickup-shortcut" hidden title="Open ClickUp settings"><img src="/static/clickup.svg" alt=""> ClickUp</button>
+        <button id="clickup-shortcut" class="integration-shortcut" hidden title="Open ClickUp settings"><img src="/static/clickup.svg" alt=""> ClickUp</button>
+        <button id="planner-shortcut" class="integration-shortcut planner-shortcut" hidden title="Open Microsoft Planner settings"><img src="/static/planner.svg" alt=""> Planner</button>
         <span class="badge">Powered by Microsoft 365 Copilot</span>
       </div>
     </header>
@@ -83,8 +84,8 @@
           <button id="clickup-disconnect" hidden>Disconnect ClickUp</button>
         </section>
         <section id="planner-settings" hidden>
-          <h2>Microsoft Planner</h2>
-          <button id="planner-connect" type="button">Connect personal Planner</button>
+          <h2><img src="/static/planner.svg" alt="" class="integration-icon">Microsoft Planner</h2>
+          <button id="planner-connect" type="button"><img src="/static/planner.svg" alt=""><span id="planner-connect-label">Connect personal Planner</span></button>
           <button id="planner-disconnect" type="button" hidden>Disconnect personal Planner</button>
           <p class="hint">Connect your Microsoft account to discover personal plans and send tasks with your permissions. Disconnecting clears saved plan selections; tasks in Microsoft Planner remain.</p>
           <p id="planner-status">Send Copilot action items to a Microsoft Planner plan.</p>

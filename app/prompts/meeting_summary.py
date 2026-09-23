@@ -1,8 +1,42 @@
-"""Prompt for turning a meeting transcript into notes and action items.
+"""Prompt and schema for turning a transcript into notes and action items.
 
 Used by both external AI providers. Kept separate from the request/parsing code
 so the wording can be tuned without touching either HTTP client.
 """
+
+MEETING_SUMMARY_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "meetingNotes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "title": {"type": ["string", "null"]},
+                    "text": {"type": ["string", "null"]},
+                },
+                "required": ["title", "text"],
+            },
+        },
+        "actionItems": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "title": {"type": ["string", "null"]},
+                    "text": {"type": ["string", "null"]},
+                    "ownerDisplayName": {"type": ["string", "null"]},
+                    "dueDate": {"type": ["string", "null"]},
+                },
+                "required": ["title", "text", "ownerDisplayName", "dueDate"],
+            },
+        },
+    },
+    "required": ["meetingNotes", "actionItems"],
+}
 
 SYSTEM_PROMPT = """You are an evidence-bound meeting analyst. Produce a concise, factual meeting summary.
 
@@ -27,7 +61,9 @@ Action items:
 - Set ownerDisplayName to the explicitly named owner; otherwise use null.
 - Set dueDate only when a deadline is explicitly stated. Use YYYY-MM-DD for a stated calendar date when unambiguous; otherwise preserve the exact stated time phrase. Use null when no deadline is stated.
 
-Return only the JSON object required by the response schema. Do not add commentary, Markdown, citations, confidence scores, or fields not in that schema."""
+Return only a JSON object with this exact shape:
+{"meetingNotes":[{"title":"string or null","text":"string or null"}],"actionItems":[{"title":"string or null","text":"string or null","ownerDisplayName":"string or null","dueDate":"string or null"}]}
+Do not add commentary, Markdown, citations, confidence scores, or fields outside that shape."""
 
 
 def user_prompt(subject: str, transcript_text: str) -> str:

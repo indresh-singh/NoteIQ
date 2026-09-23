@@ -1,0 +1,6 @@
+<svg role="img" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+  <title>Microsoft Planner</title>
+  <rect width="24" height="24" rx="5" fill="#31752F"/>
+  <path fill="#fff" d="M6 5.5h7.1a4.4 4.4 0 0 1 0 8.8H9.3v4.2H6v-13Zm3.3 3v2.8h3.5a1.4 1.4 0 1 0 0-2.8H9.3Z"/>
+  <path fill="#A9D18E" d="m14.6 17.1 1.5-1.5 1.2 1.2 2.4-2.5 1.5 1.5-3.9 3.9-2.7-2.6Z"/>
+</svg>

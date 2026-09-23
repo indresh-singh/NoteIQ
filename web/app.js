@@ -46,6 +46,8 @@ function signedOut() {
   previousUploads = "";
   $("#meetings").replaceChildren();
   $("#custom-transcripts").replaceChildren();
+  $("#clickup-shortcut").hidden = true;
+  $("#planner-shortcut").hidden = true;
   $("#workspace").hidden = true;
   $("#welcome").hidden = false;
 }
@@ -417,15 +419,21 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
       }
       buttons.append(plannerPicker);
     }
-    const plannerButton = element("button", "Send action items to Planner", "clickup-button");
+    const plannerButton = element("button", "", "clickup-button");
     plannerButton.dataset.planner = "true";
     plannerButton.hidden = true;
+    const plannerIcon = document.createElement("img");
+    plannerIcon.src = "/static/planner.svg";
+    plannerIcon.alt = "";
+    const plannerDefaultLabel = "Send action items to Planner";
+    const plannerLabel = element("span", plannerDefaultLabel);
+    plannerButton.append(plannerIcon, plannerLabel);
     plannerButton.onclick = async () => {
       plannerButton.disabled = true;
       try {
         const body = {provider: selected, ...(plannerPicker ? {plan_id: plannerPicker.value} : {})};
         const result = await api(`/api/meetings/${meeting.id}/planner`, body);
-        plannerButton.textContent = result.created ? `${result.created} task${result.created === 1 ? "" : "s"} sent` : "Already sent";
+        plannerLabel.textContent = result.created ? `${result.created} task${result.created === 1 ? "" : "s"} sent` : "Already sent";
       } catch (error) { showError(error.message); plannerButton.disabled = false; }
     };
     buttons.append(plannerButton);
@@ -449,7 +457,7 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
         plannerPicker.dataset.hasActions = String(plannerVisible);
         plannerPicker.hidden = !plannerVisible;
       }
-      plannerButton.textContent = "Send action items to Planner";
+      plannerLabel.textContent = plannerDefaultLabel;
     }
     updateExportVisibility();
     if (custom) {
@@ -680,9 +688,10 @@ let currentPlanner = null;
 function renderPlanner(planner) {
   if (currentPlanner?.delegated_connected !== planner.delegated_connected) invalidatePlannerPlans();
   currentPlanner = planner;
-  $("#planner-connect").textContent = planner.delegated_connected ? "Reconnect personal Planner" : "Connect personal Planner";
+  $("#planner-connect-label").textContent = planner.delegated_connected ? "Reconnect personal Planner" : "Connect personal Planner";
   $("#planner-disconnect").hidden = !planner.delegated_connected;
   $("#planner-settings").hidden = false;
+  $("#planner-shortcut").hidden = false;
   const plans = planner.plans || [];
   $("#planner-plans-wrap").hidden = false;
   ensureAvailablePlannerPlans();
@@ -729,11 +738,14 @@ function renderPlanner(planner) {
   });
 }
 
-$("#clickup-shortcut").onclick = () => {
+function openIntegrationSettings(target) {
   const settings = $(".account");
   settings.open = true;
-  settings.scrollIntoView({behavior: "smooth", block: "start"});
-};
+  target.scrollIntoView({behavior: "smooth", block: "start"});
+}
+
+$("#clickup-shortcut").onclick = () => openIntegrationSettings($("#clickup-settings"));
+$("#planner-shortcut").onclick = () => openIntegrationSettings($("#planner-settings"));
 
 // A sync only queues the fetch; the worker completes it a moment later. Re-read
 // a few times on a tightening schedule so the card fills in without waiting for
