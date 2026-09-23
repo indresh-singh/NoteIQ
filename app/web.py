@@ -1016,9 +1016,33 @@ def create_app(
         if not body.subject.strip() or not body.text.strip() or "\x00" in body.text:
             raise HTTPException(400, "Provide a title and a non-empty text transcript.")
         meeting_key = "upload:" + secrets.token_hex(16)
+        provider_name = "OpenAI"
+        provider_id = config.summary_provider
         try:
-            provider = OpenAI(config) if config.summary_provider == "openai" else OpenRouter(config)
-            insight = await provider.summarize(meeting_key, body.subject.strip(), body.text)
+            if config.summary_provider == "openai":
+                try:
+                    insight = await OpenAI(config).summarize(
+                        meeting_key, body.subject.strip(), body.text
+                    )
+                except ValueError as openai_error:
+                    if not config.openrouter_enabled:
+                        raise
+                    log.warning(
+                        "Transcript upload OpenAI analysis failed; falling back to OpenRouter "
+                        "user=%s filename_extension=%s error=%s",
+                        user["id"],
+                        body.filename.rsplit(".", 1)[-1].lower(),
+                        openai_error,
+                    )
+                    insight = await OpenRouter(config).summarize(
+                        meeting_key, body.subject.strip(), body.text
+                    )
+                    provider_name = "OpenRouter"
+                    provider_id = "openrouter"
+            else:
+                insight = await OpenRouter(config).summarize(
+                    meeting_key, body.subject.strip(), body.text
+                )
         except ValueError as error:
             log.warning(
                 "Transcript upload analysis failed user=%s filename_extension=%s "
@@ -1031,7 +1055,6 @@ def create_app(
                 exc_info=True,
             )
             raise HTTPException(502, str(error)) from None
-        provider_name = "OpenAI" if config.summary_provider == "openai" else "OpenRouter"
         card = build_card(insight, body.subject.strip(), source=provider_name)
         if card is None:
             raise HTTPException(502, "The AI provider returned no usable notes. Please try again.")
@@ -1052,7 +1075,7 @@ def create_app(
                 },
                 "insight": {
                     **insight.model_dump(mode="json"),
-                    "provider": config.summary_provider,
+                    "provider": provider_id,
                 },
                 "card": card,
             },
@@ -1197,7 +1220,12 @@ def create_app(
             return PlainTextResponse(request.query_params["validationToken"])
         try:
             payload = await request.json()
-            messages = validate_notifications(payload, request.app.state.config, lifecycle)
+            messages = validate_notifications(
+                payload,
+                request.app.state.config,
+                lifecycle,
+                request.app.state.store.subscription_user,
+            )
         except PermissionError as error:
             log.warning(
                 "Graph webhook authorization rejected lifecycle=%s content_length=%s error=%s",

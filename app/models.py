@@ -80,14 +80,27 @@ class TranscriptEvent(BaseModel):
     transcript_id: str = Field(min_length=1)
 
     @classmethod
-    def from_resource(cls, resource: str) -> "TranscriptEvent":
+    def from_resource(
+        cls, resource: str, subscription_user_id: str | None = None
+    ) -> "TranscriptEvent":
         # Graph uses OData parentheses in basic transcript notifications.
         match = re.fullmatch(
             r"/?users/([^/]+)/onlineMeetings\('([^']+)'\)/transcripts\('([^']+)'\)", resource
         ) or re.fullmatch(r"/?users/([^/]+)/onlineMeetings/([^/]+)/transcripts/([^/?#]+)", resource)
-        if not match:
-            raise ValueError("Unsupported transcript resource")
-        user_id, meeting_id, transcript_id = map(unquote, match.groups())
+        if match:
+            user_id, meeting_id, transcript_id = map(unquote, match.groups())
+        else:
+            # getAllTranscripts notifications use a canonical communications
+            # resource that omits the subscribed user. The caller recovers
+            # that user from the notification's subscriptionId.
+            match = re.fullmatch(
+                r"/?communications/onlineMeetings\('([^']+)'\)/transcripts\('([^']+)'\)",
+                resource,
+            )
+            if not match or not subscription_user_id:
+                raise ValueError("Unsupported transcript resource")
+            user_id = subscription_user_id
+            meeting_id, transcript_id = map(unquote, match.groups())
         if any(value in {".", ".."} for value in (meeting_id, transcript_id)):
             raise ValueError("Invalid resource identifier")
         return cls(user_id=user_id, meeting_id=meeting_id, transcript_id=transcript_id)

@@ -12,6 +12,12 @@ def enable(monkeypatch):
     settings.cache_clear()
 
 
+def enable_openai_and_openrouter(monkeypatch):
+    enable(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    settings.cache_clear()
+
+
 class FakeRouter:
     def __init__(self, config):
         pass
@@ -121,3 +127,32 @@ def test_upload_provider_failure_not_saved(monkeypatch, client, store, signed_in
     )
     assert response.status_code == 502
     assert store.meetings(USER) == []
+
+
+def test_upload_falls_back_to_openrouter_when_openai_fails(
+    monkeypatch, client, store, signed_in
+):
+    enable_openai_and_openrouter(monkeypatch)
+
+    class FailingOpenAI:
+        def __init__(self, config):
+            pass
+
+        async def summarize(self, *args):
+            raise ValueError("OpenAI rejected this API key.")
+
+    monkeypatch.setattr("app.web.OpenAI", FailingOpenAI)
+    monkeypatch.setattr("app.web.OpenRouter", FakeRouter)
+    response = client.post(
+        "/api/transcripts/upload",
+        headers=signed_in,
+        json={
+            "filename": "notes.txt",
+            "subject": "Planning",
+            "text": "Ada: I will follow up.",
+        },
+    )
+
+    assert response.status_code == 200
+    meeting = store.meetings(USER)[0]
+    assert meeting["content"]["insight"]["provider"] == "openrouter"

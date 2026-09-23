@@ -1,8 +1,9 @@
 import json
+import time
 
 import pytest
 
-from app.models import InsightEvent, UserSync, parse_event
+from app.models import InsightEvent, TranscriptEvent, UserSync, parse_event
 from app.notifications import (
     UnsupportedNotificationResource,
     notification_resource_shape,
@@ -61,6 +62,34 @@ def test_unenrolled_user_ignored(client, samples):
 
 def test_unrelated_created_resource_is_rejected_without_becoming_an_insight(client, store, samples):
     samples["notification"]["value"][0]["resource"] = "communications/calls/sensitive-call-id"
+    assert client.post("/api/graph/notifications", json=samples["notification"]).status_code == 400
+    assert store.next_job() is None
+
+
+def test_communications_transcript_resource_uses_subscription_owner(client, store, samples):
+    subscription_id = samples["notification"]["value"][0]["subscriptionId"]
+    store.save_subscription(USER, "transcripts", subscription_id, time.time() + 3600)
+    samples["notification"]["value"][0].update(
+        resource=(
+            "communications/onlineMeetings('meeting%2Fone')/"
+            "transcripts('transcript%20one')"
+        ),
+        resourceData={"id": "transcript one", "@odata.type": "#Microsoft.Graph.callTranscript"},
+    )
+
+    assert client.post("/api/graph/notifications", json=samples["notification"]).status_code == 202
+    event = parse_event(store.next_job()["payload"])
+    assert isinstance(event, TranscriptEvent)
+    assert str(event.user_id) == USER
+    assert event.meeting_id == "meeting/one"
+    assert event.transcript_id == "transcript one"
+
+
+def test_communications_transcript_resource_rejects_unknown_subscription(client, store, samples):
+    samples["notification"]["value"][0]["resource"] = (
+        "communications/onlineMeetings('meeting')/transcripts('transcript')"
+    )
+
     assert client.post("/api/graph/notifications", json=samples["notification"]).status_code == 400
     assert store.next_job() is None
 

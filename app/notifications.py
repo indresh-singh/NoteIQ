@@ -1,4 +1,5 @@
 import hmac
+from collections.abc import Callable
 
 from app.config import Settings
 from app.models import InsightEvent, TranscriptEvent
@@ -41,7 +42,12 @@ def notification_resource_shape(resource: object) -> str:
     )
 
 
-def validate_notifications(payload: object, config: Settings, lifecycle: bool = False) -> list:
+def validate_notifications(
+    payload: object,
+    config: Settings,
+    lifecycle: bool = False,
+    subscription_user: Callable[[str, str], str | None] | None = None,
+) -> list:
     """Returns event JSON strings normally, or (lifecycleEvent, resource) pairs when lifecycle=True."""
     if not isinstance(payload, dict) or not isinstance(payload.get("value"), list):
         raise ValueError("Expected a notification collection")
@@ -73,6 +79,19 @@ def validate_notifications(payload: object, config: Settings, lifecycle: bool = 
                 model = TranscriptEvent
             elif path.startswith("copilot/users/"):
                 model = InsightEvent
+            elif path.startswith("communications/onlineMeetings("):
+                subscription_id = item.get("subscriptionId")
+                user_id = (
+                    subscription_user(subscription_id, "transcripts")
+                    if subscription_user and isinstance(subscription_id, str)
+                    else None
+                )
+                try:
+                    event = TranscriptEvent.from_resource(resource, user_id)
+                except ValueError as error:
+                    raise UnsupportedNotificationResource(resource) from error
+                messages.append(event.model_dump_json())
+                continue
             else:
                 raise UnsupportedNotificationResource(resource)
             try:

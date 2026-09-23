@@ -821,6 +821,17 @@ class Store:
         """Record the result of one successful create/renew, ahead of the next reconciliation."""
         self.reconcile_subscriptions([(user_id, resource_kind, subscription_id, expires_at)])
 
+    def subscription_user(self, subscription_id: str, resource_kind: str) -> str | None:
+        """Return the enrolled user that owns a known Graph subscription."""
+        with self.connect() as db:
+            row = db.execute(
+                """SELECT u.id FROM subscriptions s
+                JOIN users u ON u.id=s.user_id
+                WHERE s.subscription_id=? AND s.resource_kind=? AND u.enabled=1""",
+                (subscription_id, resource_kind),
+            ).fetchone()
+        return row["id"] if row else None
+
     def due_subscriptions(self, force: bool = False, within_minutes: float = 30) -> list[dict]:
         """Enrolled users' subscriptions worth a Graph call: missing, expiring soon, or forced.
 

@@ -34,6 +34,16 @@ def test_transcript_notification_formats(resource):
     assert parsed.transcript_path == f"/users/{USER}/onlineMeetings/a%2Fb/transcripts/c%2Bd"
 
 
+def test_communications_transcript_resource_uses_supplied_subscription_user():
+    parsed = TranscriptEvent.from_resource(
+        "communications/onlineMeetings('meeting%2Fone')/transcripts('transcript%20one')",
+        USER,
+    )
+    assert str(parsed.user_id) == USER
+    assert parsed.meeting_id == "meeting/one"
+    assert parsed.transcript_id == "transcript one"
+
+
 async def test_webhook_transcript_content_and_private_view(
     client, store, samples, signed_in, graph
 ):
