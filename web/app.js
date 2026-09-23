@@ -14,6 +14,14 @@ let previousMeetings = "";
 let previousUploads = "";
 let previousClickUp = "";
 let chaseId = 0;
+let waitId = 0;
+// Whether syncMessage describes a Graph throttle pause; cleared with the pause.
+let syncThrottled = false;
+let pauseTimer = 0;
+const THROTTLE_BANNER = "Microsoft 365 is limiting requests. New meetings and insights are delayed; NoteIQ will catch up automatically.";
+// Refresh checks Graph inline for up to 80 seconds (REFRESH_DEADLINE_SECONDS),
+// so the browser must outwait it or a finished check would read as a timeout.
+const SYNC_TIMEOUT_MS = 90000;
 const MEETINGS_PAGE_SIZE = 5;
 let meetingsPage = 1;
 try { token = sessionStorage.getItem("noteiq-session") || ""; } catch { /* Memory-only fallback. */ }
@@ -30,6 +38,8 @@ function showError(message = "") {
 
 function signedOut() {
   syncMessage = "";
+  syncThrottled = false;
+  clearTimeout(pauseTimer);
   chaseId++;
   remember("");
   previousMeetings = "";
@@ -40,7 +50,7 @@ function signedOut() {
   $("#welcome").hidden = false;
 }
 
-async function api(path, body, timeoutMs = 20000) {
+async function api(path, body, timeoutMs = 30000) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   const requestId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -135,7 +145,8 @@ const statuses = {
   LISTENING: "",
   ACCESS_REQUIRED: "Meeting access needs attention. Ask your administrator to check Copilot licensing, Graph consent and the application access policy.",
   CONNECTION_ERROR: "Unable to connect to Microsoft Graph. Check the server configuration and retry.",
-  MISSED_EVENTS: "Some updates were missed while NoteIQ was offline. Your administrator can recover a meeting using its link."
+  MISSED_EVENTS: "Some updates were missed while NoteIQ was offline. Your administrator can recover a meeting using its link.",
+  UPDATES_DELAYED: "Microsoft 365 is limiting requests, so new meeting updates are delayed. NoteIQ will reconnect and catch up automatically."
 };
 
 function element(tag, text, className) {
@@ -720,6 +731,60 @@ async function chaseResults() {
   }
 }
 
+const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
+
+// "Found new activity" means a meeting or an AI insight that is not on screen
+// yet. A new transcript for a meeting already shown is fetched, not announced.
+function syncOutcome(result) {
+  const found = [];
+  if (result.new_meetings) found.push(plural(result.new_meetings, "new meeting"));
+  if (result.new_insights) found.push(plural(result.new_insights, "new AI insight"));
+  if (result.throttled) {
+    // The background work is paused too, so nothing is promised for "later".
+    const limited = "Microsoft 365 is limiting requests right now."
+      + (result.retry_after ? ` Try again in about ${plural(result.retry_after, "second")}.` : "");
+    if (found.length) return `Found new activity: ${found.join(" and ")}. The details will load once Microsoft 365 allows it. ${limited}`;
+    if (!result.checked) return limited;
+    return `No new activity in ${result.checked} of ${plural(result.total, "meeting")} checked. ${limited}`;
+  }
+  if (!result.complete) {
+    const rest = `${result.checked} of ${plural(result.total, "meeting")} checked; the rest will be checked in the background.`;
+    return found.length
+      ? `Found new activity: ${found.join(" and ")}. Fetching the details now — results update automatically. ${rest}`
+      : `No new activity so far: ${rest}`;
+  }
+  if (found.length) return `Found new activity: ${found.join(" and ")}. Fetching the details now — results update automatically.`;
+  return "Checked Microsoft 365 just now. You're all caught up.";
+}
+
+function showSyncOutcome(result) {
+  syncMessage = syncOutcome(result);
+  syncThrottled = Boolean(result.throttled);
+}
+
+const foundAnything = (result) => Boolean(result.new_meetings || result.new_insights);
+
+// Another tab (or an earlier click) is already checking. Wait for that check to
+// finish and show its outcome, instead of starting a second one.
+async function waitForRefresh() {
+  const mine = ++waitId;
+  const giveUp = Date.now() + 130000;  // just past the server's two-minute lock
+  while (Date.now() < giveUp) {
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    if (mine !== waitId || !token) return;
+    let status;
+    try { status = await api("/api/sync/status"); } catch { continue; }
+    if (status.running) continue;
+    if (status.result) showSyncOutcome(status.result);
+    // refresh() skips while another pass (the 15-second tick, a focus event) is
+    // drawing; wait that one out so this outcome shows now, not on the next tick.
+    while (loading) await new Promise((resolve) => setTimeout(resolve, 250));
+    await refresh();
+    if (status.result && foundAnything(status.result)) chaseResults();
+    return;
+  }
+}
+
 async function refresh(sync = false) {
   if (!token || loading) return;
   const startedWith = token;
@@ -732,12 +797,18 @@ async function refresh(sync = false) {
       signedOut();
       throw new Error("NoteIQ was connected with a different Microsoft account. Connect again and choose the account you use in Teams.");
     }
+    const limited = user.graph_throttled_seconds > 0;
+    // A throttled Refresh message describes a pause that has now ended.
+    if (syncThrottled && !limited) { syncMessage = ""; syncThrottled = false; }
     if (sync) {
-      const result = await api("/api/sync", {});
-      syncMessage = result.queued
-        ? "Found new activity. Fetching the details now — results update automatically."
-        : "Checked Microsoft 365 just now. You're all caught up.";
-      if (result.queued) chaseResults();
+      const result = await api("/api/sync", {}, SYNC_TIMEOUT_MS);
+      if (result.status === "already_running") {
+        syncMessage = "Already checking Microsoft 365. Results appear here when that check finishes.";
+        waitForRefresh();
+      } else {
+        showSyncOutcome(result);
+        if (foundAnything(result)) chaseResults();
+      }
     }
     const [meetings, clickup, planner] = await Promise.all([
       api("/api/meetings"), api("/api/clickup"), api("/api/planner"),
@@ -749,7 +820,12 @@ async function refresh(sync = false) {
     $("#welcome").hidden = true;
     $("#workspace").hidden = false;
     $("#greeting").textContent = `Welcome, ${user.name}`;
-    const statusText = ((statuses[user.status] ?? user.status) + (syncMessage ? " " + syncMessage : "")).trim();
+    // UPDATES_DELAYED and a throttled Refresh message already say this.
+    const banner = limited && user.status !== "UPDATES_DELAYED" && !syncThrottled ? THROTTLE_BANNER : "";
+    const statusText = [statuses[user.status] ?? user.status, banner, syncMessage].filter(Boolean).join(" ").trim();
+    // Re-read as the pause ends so the banner clears then, not up to 15s later.
+    clearTimeout(pauseTimer);
+    if (limited) pauseTimer = setTimeout(() => refresh(), (user.graph_throttled_seconds + 1) * 1000);
     $("#status").textContent = statusText;
     $(".statusbar").hidden = !statusText;
     const notificationError = user.notifications === "DELIVERY_ERROR";
@@ -773,15 +849,17 @@ $("#recover-meeting").onsubmit = async (event) => {
   const button = $("#recover-meeting button");
   button.disabled = true;
   try {
-    const result = await api("/api/recover-meeting", {meeting_url: $("#meeting-url").value});
+    const result = await api("/api/recover-meeting", {meeting_url: $("#meeting-url").value}, 60000);
     syncMessage = result.message || `Meeting found. Checking ${result.queued ? "transcript and Copilot insights" : "Microsoft 365"}…`;
     setTimeout(() => refresh(), 1500);
   } catch (error) {
-    if ([403, 409].includes(error.status)) {
+    if ([403, 409, 429].includes(error.status)) {
       // Ownership/access responses are durable meeting outcomes, not a
       // transient toast. Keep the explanation in the status bar so the next
-      // 15-second refresh does not erase it before the user can read it.
+      // 15-second refresh does not erase it before the user can read it. A
+      // 429 ("try again in N seconds") is cleared once the pause ends.
       syncMessage = error.message;
+      syncThrottled = error.status === 429;
       $("#status").textContent = syncMessage;
       $(".statusbar").hidden = false;
       showError();

@@ -16,15 +16,21 @@ class FakeRouter:
 
     async def summarize(self, transcript_id, subject, text):
         assert text == "Ada: I will follow up."
-        return Insight(id=transcript_id, meetingNotes=[{"text": "Discussion"}],
-                       actionItems=[{"text": "Follow up", "ownerDisplayName": "Ada"}])
+        return Insight(
+            id=transcript_id,
+            meetingNotes=[{"text": "Discussion"}],
+            actionItems=[{"text": "Follow up", "ownerDisplayName": "Ada"}],
+        )
 
 
 def test_upload_saved_and_excluded_from_graph(monkeypatch, client, store, signed_in):
     enable(monkeypatch)
     monkeypatch.setattr("app.web.OpenRouter", FakeRouter)
-    response = client.post("/api/transcripts/upload", headers=signed_in,
-                           json={"filename": "notes.txt", "subject": "Planning", "text": "Ada: I will follow up."})
+    response = client.post(
+        "/api/transcripts/upload",
+        headers=signed_in,
+        json={"filename": "notes.txt", "subject": "Planning", "text": "Ada: I will follow up."},
+    )
     assert response.status_code == 200
     meeting = store.meetings(USER)[0]
     assert meeting["content"]["source"] == "upload"
@@ -55,10 +61,16 @@ def test_new_upload_replaces_previous_but_preserves_teams(monkeypatch, client, s
 
 def test_upload_invalid_input(monkeypatch, client, signed_in):
     enable(monkeypatch)
-    for filename, text, status in [("notes.pdf", "hello", 400), ("notes.txt", " ", 400),
-                                   ("notes.txt", "x" * 60001, 422)]:
-        response = client.post("/api/transcripts/upload", headers=signed_in,
-                               json={"filename": filename, "subject": "Meeting", "text": text})
+    for filename, text, status in [
+        ("notes.pdf", "hello", 400),
+        ("notes.txt", " ", 400),
+        ("notes.txt", "x" * 60001, 422),
+    ]:
+        response = client.post(
+            "/api/transcripts/upload",
+            headers=signed_in,
+            json={"filename": filename, "subject": "Meeting", "text": text},
+        )
         assert response.status_code == status
 
 
@@ -70,7 +82,10 @@ def test_upload_provider_failure_not_saved(monkeypatch, client, store, signed_in
             raise ValueError("Unable to reach OpenRouter.")
 
     monkeypatch.setattr("app.web.OpenRouter", FailingRouter)
-    response = client.post("/api/transcripts/upload", headers=signed_in,
-                           json={"filename": "notes.txt", "subject": "Meeting", "text": "hello"})
+    response = client.post(
+        "/api/transcripts/upload",
+        headers=signed_in,
+        json={"filename": "notes.txt", "subject": "Meeting", "text": "hello"},
+    )
     assert response.status_code == 502
     assert store.meetings(USER) == []

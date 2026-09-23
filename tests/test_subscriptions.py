@@ -97,7 +97,8 @@ async def test_one_denied_user_does_not_block_another(config, store):
     assert store.user(other)["status"] == "LISTENING"
 
 
-@pytest.mark.parametrize("code", [400, 409, 429, 500, 503])
+# 429 is throttling, not a broken connection: see tests/test_throttling.py.
+@pytest.mark.parametrize("code", [400, 409, 500, 503])
 async def test_subscription_service_error_is_not_reported_as_missing_access(config, store, code):
     graph = AsyncMock()
     graph.list.return_value = []

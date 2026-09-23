@@ -138,9 +138,7 @@ class TestRecoverFromLink:
             {
                 "id": "m1",
                 "subject": "Someone else's meeting",
-                "participants": {
-                    "organizer": {"identity": {"user": {"id": other}}}
-                },
+                "participants": {"organizer": {"identity": {"user": {"id": other}}}},
             }
         ]
 
@@ -201,9 +199,7 @@ class TestRecoveryEndpoint:
         )
         assert response.status_code == 404
 
-    def test_a_found_meeting_owned_by_someone_else_is_a_clear_403(
-        self, client, signed_in, graph
-    ):
+    def test_a_found_meeting_owned_by_someone_else_is_a_clear_403(self, client, signed_in, graph):
         graph.list.return_value = [
             {
                 "id": "m1",

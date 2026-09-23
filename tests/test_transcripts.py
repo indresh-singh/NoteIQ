@@ -230,7 +230,7 @@ async def test_both_id_forms_are_recorded_so_the_next_sync_skips_the_transcript(
     graph.list.return_value = [{"id": "detail-form"}]
     await sync_meeting(MeetingSync(user_id=USER, meeting_id="m"), graph, store)
     queued = []
-    while (job := store.claim_job()):
+    while job := store.claim_job():
         queued.append(parse_event(job["payload"]))
     assert not [job for job in queued if isinstance(job, TranscriptEvent)], (
         "the transcript was re-queued under its other id"

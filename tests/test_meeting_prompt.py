@@ -2,7 +2,10 @@ from app.prompts.meeting_summary import SYSTEM_PROMPT, user_prompt
 
 
 def test_summary_prompt_requires_evidence_and_preserves_uncertainty():
-    assert "only facts, decisions, risks, questions, and actions that are clearly supported" in SYSTEM_PROMPT
+    assert (
+        "only facts, decisions, risks, questions, and actions that are clearly supported"
+        in SYSTEM_PROMPT
+    )
     assert "Do not infer an unstated decision, owner, deadline" in SYSTEM_PROMPT
     assert "Preserve uncertainty" in SYSTEM_PROMPT
     assert "return empty arrays" in SYSTEM_PROMPT

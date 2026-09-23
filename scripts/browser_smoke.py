@@ -221,6 +221,21 @@ def main():
             # most one interval tick. Three stacked chases would add eight more.
             assert len(meetings_hits) <= 10, f"chases are stacking: {len(meetings_hits)} reads"
 
+            # Graph throttling: an honest banner that clears itself when the
+            # pause ends, and Refresh wording that promises nothing while paused.
+            status = page.locator("#status")
+            store.pause_graph(6)
+            page.reload()
+            expect(status).to_contain_text("New meetings and insights are delayed")
+            page.get_by_role("button", name="Refresh", exact=True).click()
+            expect(status).to_contain_text(
+                "Microsoft 365 is limiting requests right now. Try again in about"
+            )
+            expect(status).not_to_contain_text("checked in the background")
+            # The Refresh message replaces the banner rather than repeating it.
+            expect(status).not_to_contain_text("New meetings and insights are delayed")
+            expect(status).not_to_contain_text("limiting requests", timeout=12000)
+
             page.reload()
             expect(page.get_by_role("heading", name="FY27 Budget Review")).to_be_visible(
                 timeout=15000
@@ -229,13 +244,16 @@ def main():
             assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
             # Exercise the Teams SDK path as well as the ordinary browser path.
             teams_user = USER
-            page.route("**/static/vendor/teams.min.js", lambda route: route.fulfill(
-                content_type="application/javascript",
-                body="window.microsoftTeams={app:{initialize:async()=>{},"
-                "getContext:async()=>({app:{theme:'default'},user:{id:"
-                + json.dumps(teams_user)
-                + "}}),registerOnThemeChangeHandler:()=>{},notifyAppLoaded:()=>{},notifySuccess:()=>{}}};",
-            ))
+            page.route(
+                "**/static/vendor/teams.min.js",
+                lambda route: route.fulfill(
+                    content_type="application/javascript",
+                    body="window.microsoftTeams={app:{initialize:async()=>{},"
+                    "getContext:async()=>({app:{theme:'default'},user:{id:"
+                    + json.dumps(teams_user)
+                    + "}}),registerOnThemeChangeHandler:()=>{},notifyAppLoaded:()=>{},notifySuccess:()=>{}}};",
+                ),
+            )
             page.reload()
             expect(page.get_by_role("heading", name="FY27 Budget Review")).to_be_visible()
             page.get_by_role("button", name="Refresh", exact=True).click()
@@ -245,7 +263,9 @@ def main():
             expect(page.locator("#error")).to_contain_text("different Microsoft account")
             expect(page.locator("#workspace")).to_be_hidden()
             teams_user = USER
-            page.evaluate("value => sessionStorage.setItem('noteiq-session', value)", store.session(USER))
+            page.evaluate(
+                "value => sessionStorage.setItem('noteiq-session', value)", store.session(USER)
+            )
             page.reload()
             expect(page.get_by_role("heading", name="FY27 Budget Review")).to_be_visible()
             page.get_by_text("Account settings", exact=True).click()

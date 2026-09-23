@@ -102,7 +102,9 @@ async def test_disconnected_user_is_skipped(samples, store):
     graph.request.assert_not_awaited()
 
 
-async def test_copilot_insight_is_processed_with_external_summary_service(monkeypatch, samples, store):
+async def test_copilot_insight_is_processed_with_external_summary_service(
+    monkeypatch, samples, store
+):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     monkeypatch.setenv("OPENROUTER_MODEL", "test/model")
     settings.cache_clear()
