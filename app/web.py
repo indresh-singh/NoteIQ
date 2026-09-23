@@ -16,6 +16,7 @@ from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
 import httpx
+import msal
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
@@ -40,6 +41,7 @@ from app.observability import log_context, safe_correlation_id
 from app.openai import OpenAI
 from app.openrouter import MAX_TRANSCRIPT_CHARS, OpenRouter
 from app.planner import Planner
+from app.planner_identity import PLANNER_SCOPES, DelegatedGraph, cache_cipher, delegated_token
 from app.store import Store, digest
 from app.subscriptions import resource_owner
 from app.sync import REFRESH_GRAPH_SLOTS, REFRESH_LOCK_SECONDS
@@ -359,14 +361,13 @@ def create_app(
             raise HTTPException(503, "Storage unavailable")
         return {"status": "ok"}
 
-    @app.post("/api/auth/start")
-    async def login_start(body: LoginStart, request: Request):
+    async def start_login(body: LoginStart, request: Request, planner_user=None):
         config = request.app.state.config
         # MSAL generates OAuth state, nonce and the PKCE verifier. Keep that flow server-side.
         try:
             flow = await asyncio.to_thread(
                 lambda: identity_client().initiate_auth_code_flow(
-                    scopes=["User.Read"],
+                    scopes=["User.Read", *PLANNER_SCOPES] if planner_user else ["User.Read"],
                     redirect_uri=config.redirect_uri,
                     prompt="select_account",
                 )
@@ -388,11 +389,22 @@ def create_app(
             flow["state"],
             {
                 "flow": flow,
+                "planner_user": planner_user,
                 "challenge": body.challenge,
                 "in_teams": body.in_teams,
             },
         )
         return {"url": config.public_url + "/auth/launch?" + urlencode({"state": flow["state"]})}
+
+    @app.post("/api/auth/start")
+    async def login_start(body: LoginStart, request: Request):
+        return await start_login(body, request)
+
+    @app.post("/api/planner/connect")
+    async def planner_connect(
+        body: LoginStart, request: Request, user: dict = Depends(current_user)
+    ):
+        return await start_login(body, request, user["id"])
 
     @app.get("/auth/launch")
     async def login_launch(state: str, request: Request):
@@ -407,9 +419,10 @@ def create_app(
         item = store.pop("flow", request.query_params.get("state", ""))
         if not item:
             return auth_result(error="Sign-in expired. Close this window and connect again.")
+        cache = msal.SerializableTokenCache() if item.get("planner_user") else None
         try:
             result = await asyncio.to_thread(
-                lambda: identity_client().acquire_token_by_auth_code_flow(
+                lambda: identity_client(token_cache=cache).acquire_token_by_auth_code_flow(
                     item["flow"], dict(request.query_params)
                 )
             )
@@ -419,6 +432,16 @@ def create_app(
             user_id = str(UUID(claims["oid"]))
             if UUID(claims["tid"]) != request.app.state.config.tenant_id:
                 raise ValueError("Wrong tenant")
+            if item.get("planner_user") and user_id != item["planner_user"]:
+                raise ValueError("Use the same Microsoft account you connected to NoteIQ.")
+            if cache is not None:
+                scopes = {
+                    scope.rsplit("/", 1)[-1].lower() for scope in result.get("scope", "").split()
+                }
+                if not result.get("access_token") or "tasks.readwrite" not in scopes:
+                    raise ValueError(
+                        "Microsoft did not grant Tasks.ReadWrite. Ask your administrator to allow Planner consent."
+                    )
         except Exception as error:
             log.exception(
                 "Microsoft sign-in callback failed in_teams=%s has_state=%s query_keys=%s "
@@ -443,6 +466,11 @@ def create_app(
                 "challenge": item["challenge"],
                 "user_id": user_id,
                 "name": claims.get("name") or "Microsoft 365 user",
+                "planner_cache": cache_cipher(request.app.state.config, user_id)
+                .encrypt(cache.serialize().encode())
+                .decode()
+                if cache is not None
+                else None,
             },
             ttl=60,
         )
@@ -459,6 +487,9 @@ def create_app(
         if not item:
             raise HTTPException(401, "This sign-in has already been used.")
         store.enroll(item["user_id"], item["name"])
+        if item.get("planner_cache"):
+            store.save_planner_cache(item["user_id"], item["planner_cache"])
+            log.info("Planner delegated connection saved user=%s", item["user_id"])
         request_repair(request)
         return {"token": store.session(item["user_id"])}
 
@@ -727,6 +758,30 @@ def create_app(
             raise HTTPException(502, str(error)) from None
         return {"created": created, "skipped": skipped}
 
+    async def planner_client(request, user):
+        store = request.app.state.store
+        if not store.planner_cache(user["id"]):
+            return request.app.state.planner
+        try:
+            token = await delegated_token(request.app.state.config, store, user["id"])
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from None
+        return Planner(
+            request.app.state.config,
+            DelegatedGraph(
+                request.app.state.graph, token, request.app.state.config.planner_graph_version
+            ),
+            delegated=True,
+        )
+
+    @app.post("/api/planner/disconnect")
+    async def planner_disconnect(request: Request, user: dict = Depends(current_user)):
+        # Clear targets too: disconnected personal plans must never be sent via app-only access.
+        with request.app.state.store.connect() as db:
+            for table in ("planner_connections", "planner_defaults", "planner_plans"):
+                db.execute(f"DELETE FROM {table} WHERE user_id=?", (user["id"],))
+        return {"status": "disconnected"}
+
     @app.get("/api/planner")
     async def planner_status(request: Request, user: dict = Depends(current_user)):
         store = request.app.state.store
@@ -734,6 +789,7 @@ def create_app(
         default_id = default.get("plan_id") if default else None
         plans = store.planner_plans(user["id"])
         return {
+            "delegated_connected": bool(store.planner_cache(user["id"])),
             "plan_id": default_id,
             "plan_name": default.get("plan_name") if default else None,
             "plans": [{**item, "is_default": item["plan_id"] == default_id} for item in plans],
@@ -761,7 +817,7 @@ def create_app(
     @app.get("/api/planner/available-plans")
     @graph_action
     async def planner_available_plans(request: Request, user: dict = Depends(current_user)):
-        client = request.app.state.planner
+        client = await planner_client(request, user)
         try:
             plans = await client.available_plans(user["id"])
         except ValueError as error:
@@ -776,7 +832,7 @@ def create_app(
     async def planner_add_plan(
         body: PlannerPlan, request: Request, user: dict = Depends(current_user)
     ):
-        client = request.app.state.planner
+        client = await planner_client(request, user)
         store = request.app.state.store
         try:
             name = await client.plan_name(body.plan_id)
@@ -788,7 +844,7 @@ def create_app(
                 error,
                 exc_info=True,
             )
-            raise HTTPException(400, "That Planner plan couldn't be found. Check the ID.") from None
+            raise HTTPException(400, str(error)) from None
         store.add_planner_plan(user["id"], body.plan_id, name)
         if not store.planner_default(user["id"]):
             store.set_planner_default(user["id"], body.plan_id, name)
@@ -817,7 +873,7 @@ def create_app(
     async def planner_tasks_list(
         plan_id: str, request: Request, user: dict = Depends(current_user)
     ):
-        client = request.app.state.planner
+        client = await planner_client(request, user)
         store = request.app.state.store
         if plan_id not in {item["plan_id"] for item in store.planner_plans(user["id"])}:
             raise HTTPException(400, "Unknown Planner plan. Add it in Account settings first.")
@@ -842,7 +898,7 @@ def create_app(
         request: Request,
         user: dict = Depends(current_user),
     ):
-        client = request.app.state.planner
+        client = await planner_client(request, user)
         store = request.app.state.store
         meeting = store.meeting(user["id"], meeting_id)
         default = store.planner_default(user["id"])
@@ -955,11 +1011,6 @@ def create_app(
             raise HTTPException(409, "Configure the selected AI provider to analyze uploaded transcripts.")
         if not body.filename.lower().endswith((".docx", ".txt", ".vtt", ".srt")):
             raise HTTPException(400, "Upload a Teams .docx or UTF-8 .txt, .vtt or .srt file.")
-            raise HTTPException(
-                409, "Configure the selected AI provider to analyze uploaded transcripts."
-            )
-        if not body.filename.lower().endswith((".txt", ".vtt", ".srt")):
-            raise HTTPException(400, "Upload a UTF-8 .txt, .vtt or .srt file.")
         if not body.subject.strip() or not body.text.strip() or "\x00" in body.text:
             raise HTTPException(400, "Provide a title and a non-empty text transcript.")
         meeting_key = "upload:" + secrets.token_hex(16)

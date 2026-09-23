@@ -113,7 +113,7 @@ function clickupPopup(popup, url) {
   });
 }
 
-async function connect() {
+async function connect(planner = false) {
   showError();
   $("#connect").disabled = true;
   // Open immediately on the click so ordinary browsers don't block the popup after an await.
@@ -124,12 +124,13 @@ async function connect() {
     const verifier = btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
     const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
     const challenge = Array.from(new Uint8Array(hash), (b) => b.toString(16).padStart(2, "0")).join("");
-    const {url} = await api("/api/auth/start", {challenge, in_teams: inTeams});
+    const {url} = await api(planner ? "/api/planner/connect" : "/api/auth/start", {challenge, in_teams: inTeams});
     const code = inTeams
       ? await microsoftTeams.authentication.authenticate({url, width:600, height:650})
       : await popupResult(popup, url);
     const result = await api("/api/auth/complete", {code, verifier});
     remember(result.token);
+    invalidatePlannerPlans();
     await refresh();
   } catch (error) { if (popup) popup.close(); showError(error.message || String(error)); }
   finally { $("#connect").disabled = false; }
@@ -601,14 +602,26 @@ function renderClickUp(clickup) {
 let availablePlannerPlans = null;
 let availablePlannerPlansFailed = false;
 let loadingAvailablePlannerPlans = false;
+let plannerDiscoveryGeneration = 0;
+
+function invalidatePlannerPlans() {
+  plannerDiscoveryGeneration += 1;
+  availablePlannerPlans = null;
+  availablePlannerPlansFailed = false;
+}
 
 async function ensureAvailablePlannerPlans(force = false) {
   if (loadingAvailablePlannerPlans || (availablePlannerPlans !== null && !force)) return;
   loadingAvailablePlannerPlans = true;
+  const generation = plannerDiscoveryGeneration;
+  const startedWith = token;
   try {
-    availablePlannerPlans = (await api("/api/planner/available-plans")).plans;
+    const result = await api("/api/planner/available-plans");
+    if (token !== startedWith || generation !== plannerDiscoveryGeneration) return;
+    availablePlannerPlans = result.plans;
     availablePlannerPlansFailed = false;
   } catch (error) {
+    if (token !== startedWith || generation !== plannerDiscoveryGeneration) return;
     availablePlannerPlans = [];
     availablePlannerPlansFailed = true;
     // Planner has no on/off switch to gate this on, so this call now fires
@@ -635,7 +648,8 @@ function renderPlannerPicker() {
   } else if (availablePlannerPlansFailed) {
     select.append(new Option("Couldn't load plans. Click Refresh to try again.", ""));
   } else if (!options.length) {
-    select.append(new Option("No more plans to add", ""));
+    select.append(new Option(currentPlanner?.delegated_connected
+      ? "No additional plans returned by Microsoft" : "No more group plans. Connect personal Planner for your own plans.", ""));
   } else {
     select.disabled = false;
     for (const item of options) select.append(new Option(`${item.path} / ${item.name}`, item.id));
@@ -664,7 +678,10 @@ async function refreshPlannerTasks() {
 let currentPlanner = null;
 
 function renderPlanner(planner) {
+  if (currentPlanner?.delegated_connected !== planner.delegated_connected) invalidatePlannerPlans();
   currentPlanner = planner;
+  $("#planner-connect").textContent = planner.delegated_connected ? "Reconnect personal Planner" : "Connect personal Planner";
+  $("#planner-disconnect").hidden = !planner.delegated_connected;
   $("#planner-settings").hidden = false;
   const plans = planner.plans || [];
   $("#planner-plans-wrap").hidden = false;
@@ -900,6 +917,18 @@ $("#clickup-refresh-lists").onclick = async () => {
 $("#clickup-disconnect").onclick = async () => {
   try { await api("/api/clickup/disconnect", {}); await refresh(); }
   catch (error) { showError(error.message); }
+};
+$("#planner-connect").onclick = async () => {
+  const button = $("#planner-connect");
+  button.disabled = true;
+  try { await connect(true); } finally { button.disabled = false; }
+};
+$("#planner-disconnect").onclick = async () => {
+  try {
+    await api("/api/planner/disconnect", {});
+    invalidatePlannerPlans();
+    await refresh();
+  } catch (error) { showError(error.message); }
 };
 $("#planner-add-plan").onsubmit = async (event) => {
   event.preventDefault();

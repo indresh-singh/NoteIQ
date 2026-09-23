@@ -65,6 +65,7 @@ def test_planner_plan_management_and_task_export_are_private(client, store, sign
     fake = FakePlanner()
     client.app.state.planner = fake
     assert client.get("/api/planner", headers=signed_in).json() == {
+        "delegated_connected": False,
         "plan_id": None,
         "plan_name": None,
         "plans": [],
@@ -192,6 +193,7 @@ def test_planner_is_available_with_no_configuration_at_all(client, signed_in):
     box, exercising the real Planner class rather than a stand-in.
     """
     assert client.get("/api/planner", headers=signed_in).json() == {
+        "delegated_connected": False,
         "plan_id": None,
         "plan_name": None,
         "plans": [],

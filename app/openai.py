@@ -22,7 +22,7 @@ from app.prompts.meeting_summary import SYSTEM_PROMPT, user_prompt
 log = logging.getLogger(__name__)
 
 API = "https://api.openai.com/v1/responses"
-MAX_TRANSCRIPT_CHARS = 20_000
+MAX_TRANSCRIPT_CHARS = 60_000
 MAX_OUTPUT_TOKENS = 1_200
 MEETING_SUMMARY_FORMAT = {
     "type": "json_schema",

@@ -225,12 +225,23 @@ class GraphClient:
         self._client = None
 
     async def request(
-        self, method: str, path: str, *, text: bool = False, retries: bool = True, **kwargs: Any
+        self,
+        method: str,
+        path: str,
+        *,
+        text: bool = False,
+        retries: bool = True,
+        access_token: str | None = None,
+        graph_version: str = "v1.0",
+        **kwargs: Any,
     ) -> dict | str:
-        if path.startswith(GRAPH_ROOT + "/"):
+        if graph_version not in {"v1.0", "beta"}:
+            raise ValueError("Unsupported Graph version")
+        root = "https://graph.microsoft.com/" + graph_version
+        if path.startswith(root + "/"):
             url = path
         elif path.startswith("/") and not path.startswith("//"):
-            url = GRAPH_ROOT + path
+            url = root + path
         else:
             raise ValueError("Unsupported Graph URL")
 
@@ -248,7 +259,7 @@ class GraphClient:
                 "text" if text else "json",
             )
             try:
-                token = await graph_token()
+                token = access_token if access_token is not None else await graph_token()
                 headers = {
                     **extra_headers,
                     "Authorization": f"Bearer {token}",

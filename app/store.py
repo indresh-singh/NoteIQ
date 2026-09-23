@@ -426,9 +426,10 @@ class Store:
                     user_id TEXT NOT NULL, action_key TEXT NOT NULL, task_id TEXT NOT NULL,
                     task_url TEXT, PRIMARY KEY (user_id, action_key)
                 );
-                -- No OAuth token here, unlike clickup_connections: Planner is reached with the
-                -- same app-only Graph credentials as everything else, so this table only
-                -- remembers which plan is the default export target.
+                -- Optional encrypted delegated MSAL cache, separate from saved plan targets.
+                CREATE TABLE IF NOT EXISTS planner_connections (
+                    user_id TEXT PRIMARY KEY, cache TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS planner_defaults (
                     user_id TEXT PRIMARY KEY, plan_id TEXT, plan_name TEXT
                 );
@@ -518,6 +519,8 @@ class Store:
             """CREATE TABLE IF NOT EXISTS clickup_tasks (
                 user_id TEXT NOT NULL, action_key TEXT NOT NULL, task_id TEXT NOT NULL,
                 task_url TEXT, PRIMARY KEY (user_id, action_key))""",
+            """CREATE TABLE IF NOT EXISTS planner_connections (
+                user_id TEXT PRIMARY KEY, cache TEXT NOT NULL)""",
             """CREATE TABLE IF NOT EXISTS planner_defaults (
                 user_id TEXT PRIMARY KEY, plan_id TEXT, plan_name TEXT)""",
             """CREATE TABLE IF NOT EXISTS planner_plans (
@@ -786,6 +789,7 @@ class Store:
             db.execute("DELETE FROM clickup_connections WHERE user_id=?", (user_id,))
             db.execute("DELETE FROM clickup_lists WHERE user_id=?", (user_id,))
             db.execute("DELETE FROM clickup_tasks WHERE user_id=?", (user_id,))
+            db.execute("DELETE FROM planner_connections WHERE user_id=?", (user_id,))
             db.execute("DELETE FROM planner_defaults WHERE user_id=?", (user_id,))
             db.execute("DELETE FROM planner_plans WHERE user_id=?", (user_id,))
             db.execute("DELETE FROM planner_tasks WHERE user_id=?", (user_id,))
@@ -1543,3 +1547,26 @@ class Store:
             counts,
         )
         return counts
+
+    def planner_cache(self, user_id: str) -> str | None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT cache FROM planner_connections WHERE user_id=?", (user_id,)
+            ).fetchone()
+        return row["cache"] if row else None
+
+    def save_planner_cache(self, user_id: str, cache: str):
+        with self.connect() as db:
+            db.execute(
+                "INSERT INTO planner_connections(user_id, cache) VALUES (?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET cache=excluded.cache",
+                (user_id, cache),
+            )
+
+    def update_planner_cache(self, user_id: str, previous: str, cache: str):
+        # Never recreate credentials after disconnect, or overwrite a concurrent reconnect.
+        with self.connect() as db:
+            db.execute(
+                "UPDATE planner_connections SET cache=? WHERE user_id=? AND cache=?",
+                (cache, user_id, previous),
+            )

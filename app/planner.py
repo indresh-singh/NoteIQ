@@ -1,15 +1,4 @@
-"""Microsoft Planner integration, reached over the same Graph app as
-transcripts, insights and Activity notifications -- no separate OAuth app
-or token storage the way app/clickup.py needs, because the identity is
-already the one that signed into NoteIQ.
-
-Application permissions have no equivalent of "list the plans I can see":
-that shortcut (`/me/planner/plans`) only exists for a signed-in user's own
-delegated token. Discovery instead walks the Microsoft 365 Groups the
-connected person actually belongs to (GroupMember.Read.All) and lists each
-one's plan (Tasks.ReadWrite.All) -- the same workspace/space/list cascade
-app/clickup.py's available_lists() does, minus the OAuth round trip.
-"""
+"""Planner with app-only group discovery or request-scoped delegated access."""
 
 import json
 import logging
@@ -60,8 +49,8 @@ async def _call(coro):
         status = error.response.status_code
         if status in (401, 403):
             raise ValueError(
-                "NoteIQ isn't authorized for Microsoft Planner. An administrator needs to "
-                "grant it the Planner permissions described in the setup notes."
+                "Microsoft Planner denied access. Reconnect personal Planner, or ask your "
+                "administrator to check permissions and Planner service limits."
             ) from None
         if status == 404:
             raise ValueError("That Planner plan or task couldn't be found.") from None
@@ -71,9 +60,10 @@ async def _call(coro):
 
 
 class Planner:
-    def __init__(self, config: Settings, graph: GraphClient):
+    def __init__(self, config: Settings, graph: GraphClient, *, delegated: bool = False):
         self.config = config
         self.graph = graph
+        self.delegated = delegated
 
     async def available_plans(self, user_id: str) -> list[dict]:
         """Plans belonging to the Microsoft 365 Groups this person is a member of.
@@ -81,6 +71,22 @@ class Planner:
         Skips a group's plan lookup instead of failing the whole picker over
         one restricted or planless group, mirroring ClickUp's available_lists.
         """
+        if self.delegated:
+            log.info("Planner discovery started mode=delegated")
+            plans = await _call(self.graph.list("/me/planner/plans"))
+            found = {
+                plan["id"]: {
+                    "id": plan["id"],
+                    "name": plan.get("title", ""),
+                    "path": "Personal"
+                    if (plan.get("container") or {}).get("type") == "user"
+                    else "My Planner",
+                }
+                for plan in plans
+                if plan.get("id")
+            }
+            log.info("Planner discovery completed mode=delegated plans=%d", len(found))
+            return list(found.values())
         groups = await _call(
             self.graph.list(
                 f"/users/{quote(user_id, safe='')}/memberOf/microsoft.graph.group"

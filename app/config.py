@@ -24,6 +24,7 @@ class Settings(BaseModel):
     clickup_client_id: str | None = None
     clickup_client_secret: SecretStr | None = None
     clickup_token_key: SecretStr | None = None
+    planner_graph_version: Literal["v1.0", "beta"] = "v1.0"
     openrouter_api_key: SecretStr | None = None
     openrouter_model: str | None = None
     # API keys issued to an Enterprise project use the normal OpenAI API
@@ -107,6 +108,7 @@ def settings() -> Settings:
         clickup_client_id=os.getenv("CLICKUP_CLIENT_ID") or None,
         clickup_client_secret=os.getenv("CLICKUP_CLIENT_SECRET") or None,
         clickup_token_key=os.getenv("CLICKUP_TOKEN_KEY") or None,
+        planner_graph_version=os.getenv("PLANNER_GRAPH_VERSION", "v1.0"),
         openrouter_api_key=os.getenv("OPENROUTER_API_KEY") or None,
         openrouter_model=os.getenv("OPENROUTER_MODEL") or None,
         openai_api_key=os.getenv("OPENAI_API_KEY") or None,

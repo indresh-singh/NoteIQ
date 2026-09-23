@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from app.config import settings
-from app.openai import MAX_OUTPUT_TOKENS, MEETING_SUMMARY_FORMAT, OpenAI
+from app.openai import MAX_OUTPUT_TOKENS, MAX_TRANSCRIPT_CHARS, MEETING_SUMMARY_FORMAT, OpenAI
 
 
 def enable_openai(monkeypatch):
@@ -25,6 +25,7 @@ def mock_client(monkeypatch, handle):
 async def test_openai_uses_responses_api_and_parses_output_text(monkeypatch):
     enable_openai(monkeypatch)
     payloads = []
+    transcript = "x" * 60_000
 
     def handle(request):
         assert request.url == httpx.URL("https://api.openai.com/v1/responses")
@@ -41,7 +42,7 @@ async def test_openai_uses_responses_api_and_parses_output_text(monkeypatch):
         )
 
     mock_client(monkeypatch, handle)
-    insight = await OpenAI(settings()).summarize("meeting-1", "Planning", "Hello")
+    insight = await OpenAI(settings()).summarize("meeting-1", "Planning", transcript)
 
     assert insight.id == "openai:meeting-1"
     assert insight.meetingNotes[0].text == "Scope agreed."
@@ -58,6 +59,8 @@ async def test_openai_uses_responses_api_and_parses_output_text(monkeypatch):
     assert schema["schema"]["additionalProperties"] is False
     assert payloads[0]["reasoning"] == {"effort": "low"}
     assert payloads[0]["store"] is True
+    assert MAX_TRANSCRIPT_CHARS == 60_000
+    assert f"<transcript>\n{transcript}\n</transcript>" in payloads[0]["input"][1]["content"]
 
 
 async def test_openai_parses_the_rest_api_output_array(monkeypatch):

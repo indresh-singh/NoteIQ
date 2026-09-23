@@ -31,12 +31,14 @@ def test_upload_saved_and_excluded_from_graph(
 ):
     enable(monkeypatch)
     monkeypatch.setattr("app.web.OpenRouter", FakeRouter)
-    response = client.post("/api/transcripts/upload", headers=signed_in,
-                           json={"filename": filename, "subject": "Planning", "text": "Ada: I will follow up."})
     response = client.post(
         "/api/transcripts/upload",
         headers=signed_in,
-        json={"filename": "notes.txt", "subject": "Planning", "text": "Ada: I will follow up."},
+        json={
+            "filename": filename,
+            "subject": "Planning",
+            "text": "Ada: I will follow up.",
+        },
     )
     assert response.status_code == 200
     meeting = store.meetings(USER)[0]
@@ -50,6 +52,33 @@ def test_upload_saved_and_excluded_from_graph(
 
 def test_upload_requires_auth(client):
     assert client.post("/api/transcripts/upload", json={}).status_code == 401
+
+
+def test_docx_upload_accepts_60000_extracted_characters(
+    monkeypatch, client, signed_in
+):
+    enable(monkeypatch)
+
+    class LimitRouter:
+        def __init__(self, config):
+            pass
+
+        async def summarize(self, transcript_id, subject, text):
+            assert len(text) == 60_000
+            return Insight(
+                id=transcript_id,
+                meetingNotes=[{"text": "Discussion"}],
+                actionItems=[],
+            )
+
+    monkeypatch.setattr("app.web.OpenRouter", LimitRouter)
+    response = client.post(
+        "/api/transcripts/upload",
+        headers=signed_in,
+        json={"filename": "teams.docx", "subject": "Planning", "text": "x" * 60_000},
+    )
+
+    assert response.status_code == 200
 
 
 def test_new_upload_replaces_previous_but_preserves_teams(monkeypatch, client, store, signed_in):

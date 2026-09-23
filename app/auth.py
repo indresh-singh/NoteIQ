@@ -6,13 +6,14 @@ import msal
 from app.config import settings
 
 
-def identity_client() -> msal.ConfidentialClientApplication:
+def identity_client(*, token_cache=None) -> msal.ConfidentialClientApplication:
     config = settings()
     return msal.ConfidentialClientApplication(
         str(config.graph_client_id),
         authority=f"https://login.microsoftonline.com/{config.tenant_id}",
         client_credential=config.graph_secret.get_secret_value(),
         timeout=20,
+        token_cache=token_cache,
     )
 
 

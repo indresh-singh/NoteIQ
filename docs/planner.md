@@ -1,125 +1,95 @@
-# Microsoft Planner action-item export
+# Microsoft Planner integration
 
-NoteIQ can send Copilot action items to Microsoft Planner, the same way it
-does to ClickUp (see [docs/clickup.md](clickup.md)) — with one structural
-difference worth understanding before you turn it on: **Planner has no
-separate OAuth app or connect step.** It is reached with the same app-only
-Graph credentials already used for transcripts, insights and Activity
-notifications, because the identity is already the one that signed into
-NoteIQ via Microsoft SSO. There is no ClickUp-style "Connect" button, no
-client secret to generate, no per-user token stored, and no feature flag —
-it's on unconditionally, the same as transcript and insight processing. Only
-two extra Graph permissions on the app registration NoteIQ already uses are
-needed before it actually works.
+NoteIQ supports two access modes:
 
-## What it does
+- **Group plans without a personal connection:** existing application credentials
+  discover plans in the signed-in user's Microsoft 365 groups.
+- **Connected personal Planner:** delegated Microsoft access lists the signed-in
+  user's plans using `GET /me/planner/plans`. Plan lookup, task previews, duplicate
+  checks, task creation and description updates all use that same user's token.
+  Expired or revoked delegated access never silently falls back to application access.
 
-- **Write:** clicking **Send action items to Planner** on a meeting creates
-  one Planner task per action item, in the user's chosen plan. A second
-  click skips tasks NoteIQ already created for that same action item (and
-  re-creates one only if it was deleted from Planner itself).
-- **Retrieve / show what exists:** Account settings → Microsoft Planner has
-  an **Existing tasks in the default plan** section that lists what is
-  already in the connected plan, independent of anything NoteIQ exported —
-  so a person can see the plan's current state, not just what they just sent.
+## Enable personal Planner
 
-## One-time Azure/Entra setup
+1. In the existing Entra app registration, add Microsoft Graph **Delegated**
+   `Tasks.ReadWrite`. Keep the existing delegated `User.Read` permission.
+2. Grant administrator consent if required by your tenant's consent policy.
+3. Deploy the updated app. The existing Web redirect URI
+   `PUBLIC_BASE_URL/auth/callback` is reused; no new redirect is required.
+4. In NoteIQ's Account settings, select **Connect personal Planner** and sign in
+   with the same work account already connected to NoteIQ. Accept Planner access.
+5. Select your plan from the refreshed picker and click **Add Plan**. The first
+   saved plan becomes the default export destination.
+6. Open a meeting and select **Send action items to Planner**. Use **Refresh tasks**
+   in settings to inspect the default plan.
 
-1. Open **Microsoft Entra ID → App registrations → note-iq → API permissions
-   → Add a permission → Microsoft Graph → Application permissions** and add:
+A personal plan belonging to a work account is distinct from a consumer Microsoft
+account. This integration uses the configured organizational tenant.
 
-   | Permission | Why |
-   |---|---|
-   | `Tasks.ReadWrite.All` | Create, read and update tasks in Planner plans |
-   | `GroupMember.Read.All` | List the Microsoft 365 Groups a signed-in person belongs to, so plan discovery only shows plans for groups they're actually in |
+## API compatibility and rollout verification
 
-2. Click **Grant admin consent** for the tenant and confirm both show
-   consent granted.
+`PLANNER_GRAPH_VERSION` defaults to `v1.0`. The user plan-list API requires
+**delegated** access; its application permission mode is unsupported.
 
-No client ID, secret, encryption key or environment variable is needed —
-unlike ClickUp, there is nothing else to configure. NoteIQ shows the
-Microsoft Planner section in Account settings to every signed-in user as
-soon as it's deployed.
+Microsoft documents personal `user` containers under Graph beta. If a known personal
+Basic plan is absent from v1.0 results, an administrator can explicitly set
+`PLANNER_GRAPH_VERSION=beta` and restart the app to evaluate it. This setting affects
+only delegated Planner requests, including task writes. There is no automatic beta
+fallback. Microsoft does not support beta APIs for production use.
 
-**Grant consent before anyone tries to use it.** Because there is no flag
-gating this, if the two permissions above aren't consented yet, a person who
-opens Account settings or clicks **Send action items to Planner** hits a
-real authorization error, not a hidden section. The UI is deliberately quiet
-about a *background* discovery failure (see "Why plan discovery errors stay
-quiet" below) but an explicit action still surfaces one plainly.
+Before enabling beta for a production deployment, verify in your tenant:
 
-## Why plan discovery is scoped the way it is
+- The personal plan appears after consent and Refresh, and unrelated private plans do not.
+- Add Plan, task preview, export and duplicate detection work with that plan.
+- Reconnect works after revocation; denial of consent leaves the previous connection intact.
+- Test both a personal plan and a shared group plan with the intended users.
 
-Application permissions have no equivalent of "list the plans I can see" —
-that shortcut only exists for a signed-in user's own delegated token, and
-NoteIQ deliberately avoids adding a second, delegated Planner-specific
-consent on top of the sign-in that already happened. Instead, discovery uses
-the signed-in person's own Azure AD object ID (already known from sign-in)
-to list *their* group memberships via `GroupMember.Read.All`, then lists each
-of those groups' Planner plans via `Tasks.ReadWrite.All`. This is why
-`GroupMember.Read.All` is requested at all: without it, the only alternative
-would be `Group.Read.All`, which would let any signed-in NoteIQ user browse
-*every* group's plan in the tenant, not just their own — a real access
-boundary this design deliberately avoids.
+A successful empty response is shown as no additional plans returned by Microsoft;
+NoteIQ does not claim that every plan visible in the Planner app is API-accessible.
+Premium plan support is not promised by this integration. Tests simulate Graph;
+live personal-plan compatibility still requires the user's interactive consent.
 
-A plan can also be added by pasting its ID directly (Account settings →
-Microsoft Planner → Add a Planner plan), for a plan discovery didn't surface —
-for example a plan on a Microsoft 365 Group the connected person belongs to
-indirectly, or a plan type discovery does not walk. The plan's ID is the
-value after `/plan/` in its Planner web URL.
+## Credentials and lifecycle
 
-## A caveat worth verifying before you rely on this
+MSAL handles authorization-code flow, PKCE, nonce validation and silent token refresh.
+Consent is bound to the current NoteIQ account and tenant. Microsoft tokens never
+leave the server. The browser receives only NoteIQ's existing session token.
 
-Microsoft's Planner Graph API surface has changed over time — most notably
-the newer "Planner in Microsoft Teams" plans backed by `/planner/rosterPlans`
-rather than a Microsoft 365 Group, which application-permission support has
-rolled out to more gradually than classic Group-backed plans. This
-integration targets classic, group-backed plans (`/groups/{id}/planner/plans`
-and `/planner/plans/{id}`). Before depending on this in production, check
-current Microsoft Learn documentation for whether `Tasks.ReadWrite.All`
-(Application) covers the specific kind of plan your tenant uses — the
-guidance above is accurate at the time of writing but this is an area
-Microsoft continues to actively change.
+Each user's serialized MSAL cache is encrypted with Fernet before database storage,
+including the short-lived sign-in handoff. Its key is derived using HKDF-SHA256 from
+`GRAPH_CLIENT_SECRET`, separated by purpose, tenant, app and user. Keep that secret
+strong and identical across replicas. **Rotating it requires users to reconnect
+personal Planner.** No additional encryption environment variable is required.
 
-## Why plan discovery errors stay quiet
+Both SQLite and PostgreSQL create `planner_connections` automatically. Cache refresh
+uses a conditional update so a concurrent refresh cannot overwrite a reconnect or
+restore credentials deleted by disconnect.
 
-Every signed-in user now sees the Microsoft Planner section, not just people
-who opted in. Opening Account settings makes one background call to discover
-that person's plans (`GET /api/planner/available-plans`). Before admin
-consent is granted tenant-wide, that call 403s for everyone — and since it
-fires automatically rather than from a click, it would otherwise put a red
-error banner in front of every user just for opening a menu. That automatic
-call fails quietly (the picker itself shows "Couldn't load plans. Click
-Refresh to try again."); only an explicit **Refresh** click, or an actual
-**Send action items to Planner** / **Add a Planner plan** action, surfaces a
-visible error. This is a UI-side mitigation, not a substitute for granting
-consent promptly — see the setup warning above.
+**Disconnect personal Planner** deletes its credentials and clears saved plan
+selections/defaults. It keeps export tracking to prevent duplicates if plans are
+added again. It does not delete tasks in Microsoft Planner or revoke the Entra
+consent grant. Full NoteIQ disconnect deletes credentials and all local Planner data.
 
-## The link a created task points to
+Exports create one task per action, followed by a description update using an ETag.
+Owner names are description text, not Graph assignments; due dates and buckets are
+not populated. A failed description update is logged while retaining the created task.
 
-Microsoft Graph returns no URL on a `plannerTask` or `plannerPlan` — there is
-nothing to read one from, and every *task*-level web link in circulation
-(`tasks.office.com/{tenant}/Home/Task/{id}`, or Planner-for-the-web's
-`planner.cloud.microsoft/webui/plan/{planId}/.../task/{id}`) is
-reverse-engineered from "Copy link to task", not published by Microsoft, and
-differs by whether the plan is Basic or Premium tier — a distinction Graph
-doesn't expose either, so a client can't even pick the right one reliably.
+## Application mode permissions
 
-Instead, every exported task and every row in "Existing tasks" carries a
-**Teams deep link to its plan**:
-`https://teams.microsoft.com/l/entity/com.microsoft.teamspace.tab.planner/mytasks?...&context={"subEntityId":"/v1/plan/{planId}"}`.
-This is Microsoft's own documented Teams deep-link mechanism (the same
-`teams.microsoft.com/l/entity/...` scheme NoteIQ's own Activity notifications
-already use — see `app/activity.py`), not a reverse-engineered Planner web
-URL, and it doesn't depend on plan tier. It opens Teams to the specific plan
-via its first-party Planner tab (`com.microsoft.teamspace.tab.planner`); the
-person finds the task there rather than following a link that might 404. The
-construction in `app/planner.py`'s `plan_deep_link()` was checked
-byte-for-byte against a real link copied from Teams' own "Copy link to plan",
-and that comparison is a permanent regression test in `tests/test_planner.py`.
+Users who have not connected personal Planner retain group-based discovery using
+application `GroupMember.Read.All` and `Tasks.ReadWrite.All`, with admin consent.
+Group lookup failures may produce partial results in this legacy mode.
 
-See [Create plannerTask](https://learn.microsoft.com/en-us/graph/api/planner-post-tasks),
-[Update plannerTaskDetails](https://learn.microsoft.com/en-us/graph/api/plannertaskdetails-update)
-(the `description` field, set with an `If-Match` etag), and the
-[Graph permissions reference](https://learn.microsoft.com/en-us/graph/permissions-reference)
-for `Tasks.ReadWrite.All` and `GroupMember.Read.All`.
+## Debugging
+
+The shared HTTP/Graph logger records UTC millisecond timestamps, NoteIQ request IDs,
+Graph request IDs, duration, status and sanitized error diagnostics. Delegated
+Planner discovery logs its mode and returned plan count. For a missing plan, correlate
+`/api/planner/available-plans` with `/me/planner/plans` and check the configured API
+version. For 403, inspect the Graph error code: access restrictions and service limits
+can both cause 403. Use **Reconnect personal Planner** for expired/revoked consent.
+
+References:
+- [List user plans](https://learn.microsoft.com/en-us/graph/api/planneruser-list-plans?view=graph-rest-1.0)
+- [Personal plan containers (beta)](https://learn.microsoft.com/en-us/graph/api/resources/planner-overview?view=graph-rest-beta)
+- [MSAL cache serialization](https://learn.microsoft.com/en-us/entra/msal/python/advanced/msal-python-token-cache-serialization)
