@@ -44,6 +44,8 @@ function signedOut() {
   remember("");
   previousMeetings = "";
   previousUploads = "";
+  occurrenceOpen.clear();
+  occurrenceProvider.clear();
   $("#meetings").replaceChildren();
   $("#custom-transcripts").replaceChildren();
   $("#clickup-shortcut").hidden = true;
@@ -208,6 +210,9 @@ function providerLabel(provider) {
   return "Microsoft 365 Copilot";
 }
 
+const occurrenceOpen = new Map();
+const occurrenceProvider = new Map();
+
 function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProviders, custom = false) {
   const signature =
     JSON.stringify(meetings) + summaryProvider + JSON.stringify(summaryProviders) + JSON.stringify(clickup) + JSON.stringify(planner);
@@ -224,9 +229,46 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
   const pageMeetings = custom
     ? meetings
     : meetings.slice((meetingsPage - 1) * MEETINGS_PAGE_SIZE, meetingsPage * MEETINGS_PAGE_SIZE);
-  for (const meeting of pageMeetings) {
+  for (const umbrella of pageMeetings) {
+    const occurrences = umbrella.content.occurrences;
+    const grouped = !custom && occurrences && (
+      umbrella.content.meeting_metadata?.meeting_type === "recurring" || occurrences.length > 1
+    );
+    let parent = target;
+    if (grouped) {
+      parent = element("article", "", "meeting meeting-series");
+      parent.append(element("p", umbrella.content.meeting_metadata?.meeting_type === "recurring"
+        ? "RECURRING MEETING" : "MEETING SESSIONS", "eyebrow"), element("h2", umbrella.subject));
+      parent.append(element("p", `${occurrences.length} sessions · Latest first`, "hint"));
+      target.append(parent);
+    }
+    if (occurrences && umbrella.content.unassigned_insights) {
+      parent.append(element("p", "Earlier insights could not be assigned to a session. Refresh to recover session details, then regenerate the session you need.", "hint"));
+    }
+    if (occurrences && !occurrences.length) {
+      parent.append(element("p", "Waiting for transcripts to identify this meeting's sessions.", "hint"));
+    }
+    const views = occurrences ? occurrences.map((session) => ({
+      ...umbrella, occurrence_id: session.id,
+      content: {...umbrella.content, transcripts: session.transcripts, insights: session.insights,
+        transcript: session.transcripts[0]?.transcript, insight: null, started_at: session.started_at,
+        metadata_pending: session.metadata_pending},
+    })) : [umbrella];
+    for (const [sessionIndex, meeting] of views.entries()) {
+    const viewKey = `${meeting.id}:${meeting.occurrence_id || "single"}`;
+    let destination = parent;
+    if (grouped) {
+      const details = element("details", "", "meeting-occurrence");
+      details.open = occurrenceOpen.get(viewKey) ?? sessionIndex === 0;
+      details.ontoggle = () => occurrenceOpen.set(viewKey, details.open);
+      details.append(element("summary", meeting.content.started_at
+        ? new Date(meeting.content.started_at).toLocaleString() : "Session date unavailable"));
+      parent.append(details);
+      destination = details;
+    }
     const article = element("article", "", "meeting");
-    article.append(element("p", custom ? "CUSTOM TRANSCRIPT" : "MEETING FOLLOW-UP", "eyebrow"), element("h2", meeting.subject));
+    if (!grouped) article.append(element("p", custom ? "CUSTOM TRANSCRIPT" : "MEETING FOLLOW-UP", "eyebrow"), element("h2", meeting.subject));
+    if (meeting.content.metadata_pending) article.append(element("p", "Session details unavailable; this transcript is kept separately.", "hint"));
 
     // Every insight segment carries its own provider tag; group them so the
     // toggle below can show exactly one provider's data at a time.
@@ -244,6 +286,7 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
     let selected = providersWithContent.length === 1 ? providersWithContent[0]
       : providersWithContent.includes(summaryProvider) ? summaryProvider
       : providersWithContent[0] || summaryProvider || "copilot";
+    selected = occurrenceProvider.get(viewKey) || selected;
 
     const dateLine = element("time", "");
     const hintLine = element("p", "", "hint");
@@ -258,7 +301,7 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
     function updateProviderText() {
       const has = byProvider[selected].length > 0;
       const latest = byProvider[selected].map((segment) => segment.insight).find((insight) => insight?.endDateTime);
-      const when = latest?.endDateTime || meeting.content.transcript?.createdDateTime;
+      const when = meeting.content.started_at || latest?.endDateTime || meeting.content.transcript?.createdDateTime;
       dateLine.textContent = when ? new Date(when).toLocaleString() : "";
       dateLine.hidden = !when;
       hintLine.textContent = has
@@ -301,6 +344,7 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
 
     function selectProvider(provider) {
       selected = provider;
+      occurrenceProvider.set(viewKey, provider);
       updateProviderText();
       updateToggle();
       updateExportVisibility();
@@ -321,7 +365,7 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
       regenerateButton.disabled = true;
       regenerateButton.classList.add("spinning");
       try {
-        await api(`/api/meetings/${meeting.id}/regenerate`, {provider: selected}, 90000);
+        await api(`/api/meetings/${meeting.id}/regenerate`, {provider: selected, occurrence_id: meeting.occurrence_id}, 90000);
         await refresh();
       } catch (error) {
         showError(error.message);
@@ -371,7 +415,8 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
       activeContentButton = transcriptButton;
       buttons.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b === transcriptButton)));
       content.replaceChildren();
-      const transcripts = meeting.content.transcripts || [];
+      const transcripts = [...(meeting.content.transcripts || [])].sort((a, b) =>
+        (Date.parse(b.transcript.createdDateTime) || 0) - (Date.parse(a.transcript.createdDateTime) || 0));
       if (!transcripts.length) content.append(element("p", "Transcript not synced yet. Use Refresh to check Microsoft 365; results appear automatically when ready."));
       for (const {transcript} of transcripts) {
         const detail = element("details");
@@ -409,7 +454,7 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
     clickupButton.onclick = async () => {
       clickupButton.disabled = true;
       try {
-        const body = {provider: selected, list_id: clickupSelect.value};
+        const body = {provider: selected, list_id: clickupSelect.value, occurrence_id: meeting.occurrence_id};
         const result = await api(`/api/meetings/${meeting.id}/clickup`, body);
         clickupLabel.textContent = result.created ? `${result.created} task${result.created === 1 ? "" : "s"} sent` : "Already sent";
       } catch (error) { showError(error.message); clickupButton.disabled = false; }
@@ -434,7 +479,7 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
     plannerButton.onclick = async () => {
       plannerButton.disabled = true;
       try {
-        const body = {provider: selected, plan_id: plannerSelect.value};
+        const body = {provider: selected, plan_id: plannerSelect.value, occurrence_id: meeting.occurrence_id};
         const result = await api(`/api/meetings/${meeting.id}/planner`, body);
         plannerLabel.textContent = result.created ? `${result.created} task${result.created === 1 ? "" : "s"} sent` : "Already sent";
       } catch (error) { showError(error.message); plannerButton.disabled = false; }
@@ -450,10 +495,12 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
       clickupActions.dataset.hasActions = String(clickupVisible);
       clickupActions.hidden = !clickupVisible;
       clickupLabel.textContent = clickupDefaultLabel;
+      clickupButton.disabled = false;
       const plannerVisible = plans.length > 0 && hasActions;
       plannerActions.dataset.hasActions = String(plannerVisible);
       plannerActions.hidden = !plannerVisible;
       plannerLabel.textContent = plannerDefaultLabel;
+      plannerButton.disabled = false;
     }
     updateExportVisibility();
     if (custom) {
@@ -477,7 +524,7 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
       exportActions.append(clickupActions, plannerActions);
       if (lists.length || plans.length) article.append(exportActions);
       if (!lists.length && !plans.length) article.append(element("p", "Connect ClickUp or add a Microsoft Planner plan in Account settings to create tasks.", "hint"));
-      target.append(article);
+      destination.append(article);
       continue;
     }
     article.append(buttons);
@@ -485,8 +532,9 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
     article.append(content, footerLine);
     updateProviderText();
     updateToggle();
-    target.append(article);
+    destination.append(article);
     buttons.firstChild.click();
+    }
   }
   if (!custom && meetings.length > MEETINGS_PAGE_SIZE) {
     const pager = element("nav", "", "pagination");

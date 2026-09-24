@@ -17,6 +17,8 @@ from pathlib import Path
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
+from app.occurrences import select_session, transcript_version
+
 log = logging.getLogger(__name__)
 
 # Microsoft documents that insights "might take up to four hours to be available
@@ -251,7 +253,11 @@ def artifact_aliases(body: dict) -> set[str]:
         # meeting alike is the comparison the product exists to show, not a
         # duplicate, so their fingerprints must never collide.
         provider = body.get("provider") or "copilot"
-        fingerprint = json.dumps([provider, notes, actions], sort_keys=True, default=str)
+        fingerprint = json.dumps(
+            [provider, body.get("occurrence_id"), body.get("contentCorrelationId"), notes, actions],
+            sort_keys=True,
+            default=str,
+        )
         aliases.add("sha:" + digest(fingerprint))
     return aliases
 
@@ -1198,8 +1204,17 @@ class Store:
                 ).fetchone()
         return dict(row) if row else None
 
+    def _lock_meeting_writes(self, db, user_id: str):
+        # Serialize JSON read/merge/write across workers, including the first
+        # insert. A meeting-row lock alone cannot protect a not-yet-created row.
+        if self.database_url:
+            db.execute("SELECT id FROM users WHERE id=? FOR UPDATE", (user_id,)).fetchone()
+        else:
+            db.execute("BEGIN IMMEDIATE")
+
     def save_meeting(self, user_id: str, subject: str, content: dict):
         with self.connect() as db:
+            self._lock_meeting_writes(db, user_id)
             occurred_at = _meeting_occurred_at(content)
             if content.get("meeting_id"):
                 row = db.execute(
@@ -1208,6 +1223,28 @@ class Store:
                     (user_id, content["meeting_id"]),
                 ).fetchone()
                 merged = json.loads(row["content"]) if row else {}
+                insight = content.get("insight") or {}
+                if insight.get("transcript_version"):
+                    try:
+                        current = select_session(merged, insight.get("occurrence_id"))
+                    except (KeyError, ValueError):
+                        return False
+                    if transcript_version(current) != insight["transcript_version"]:
+                        # A new segment arrived while the AI was running. Its
+                        # newer generation owns this call's result.
+                        return False
+                if content.get("meeting_metadata"):
+                    content = {
+                        **content,
+                        "meeting_metadata": {
+                            **merged.get("meeting_metadata", {}),
+                            **{
+                                k: v
+                                for k, v in content["meeting_metadata"].items()
+                                if v is not None
+                            },
+                        },
+                    }
                 # Keep every transcript and insight segment under its meeting, in either arrival order.
                 for kind, field in (("insight", "insights"), ("transcript", "transcripts")):
                     if kind in content:
@@ -1299,6 +1336,7 @@ class Store:
         schema migration. A successful recheck clears the prior terminal state.
         """
         with self.connect() as db:
+            self._lock_meeting_writes(db, user_id)
             row = db.execute(
                 """SELECT id, content FROM meetings WHERE user_id=? AND meeting_id=?
                 ORDER BY id DESC LIMIT 1""",
@@ -1316,7 +1354,10 @@ class Store:
             else:
                 content.pop("sync_message", None)
             if metadata is not None:
-                content["meeting_metadata"] = metadata
+                content["meeting_metadata"] = {
+                    **content.get("meeting_metadata", {}),
+                    **{key: value for key, value in metadata.items() if value is not None},
+                }
             facts = meeting_facts(content)
             db.execute(
                 """UPDATE meetings SET content=?, occurred_at=COALESCE(?, occurred_at),

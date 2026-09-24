@@ -20,7 +20,33 @@ uv run python -m scripts.package_teams
 uv run python -m scripts.serve
 ```
 
-The configuration helper asks for four values and generates the webhook secret. Local serving is useful for development; the deployed Container App supplies the public HTTPS endpoint used by Teams, Entra and Graph.
+Development/testing configuration lives in `.env.dev`; production configuration lives in
+`.env.prod`. Each file contains both application settings and its Azure deployment target.
+Local serving is useful for development; the deployed Container App supplies the public
+HTTPS endpoint used by Teams, Entra and Graph.
+
+PowerShell examples:
+
+```powershell
+$env:APP_ENV = "dev" # use "stg" for the same DEV/STG configuration
+uv run python -m scripts.configure --app-env dev
+uv run python -m scripts.serve
+
+$env:APP_ENV = "prod"
+uv run python -m scripts.configure --app-env prod
+```
+
+Deployment uses two explicit commands. Each command loads its own environment file and
+generates a unique immutable image tag and Container Apps revision automatically:
+
+```sh
+bash scripts/deploy_dev.sh
+bash scripts/deploy_prod.sh
+```
+
+The DEV command targets the shared DEV/TEST DAIO resources and sets `APP_ENV=dev`.
+The PROD command targets the production resource group, Container App, and registry and
+sets `APP_ENV=prod`.
 
 ## Diagnostic logging
 
@@ -40,6 +66,7 @@ redacted and Microsoft resource identifiers in request URLs are hashed.
 
 - Real Microsoft work-account sign-in through a Teams-compatible popup.
 - Automatic user enrollment from the authenticated identity, without a pilot-ID environment variable.
+- [Collapsible recurring meeting sessions](docs/recurring-meetings.md), with separate summaries, actions, and task exports for each Teams call.
 - Durable subscriptions, queued processing and stored results, using PostgreSQL in Azure and SQLite locally.
 - Summary, Action items and Transcripts buttons; the open tab refreshes every 15 seconds.
 - Sign out, or disconnect to stop collection and delete saved NoteIQ cards.

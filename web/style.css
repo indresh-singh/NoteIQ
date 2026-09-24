@@ -77,6 +77,10 @@ body.contrast .send-button:hover{background:#0f0;color:#000}
 .provider-state[aria-checked=true]{background:var(--paper);color:var(--text);box-shadow:0 1px 4px #20204018}
 .regenerate-button{display:inline-flex;align-items:center;gap:6px;margin-left:2px;box-shadow:0 3px 9px #2020401f}
 .regenerate-button:hover{box-shadow:0 5px 14px #20204029}
+.meeting-occurrence{border-top:1px solid #8884;margin-top:1rem}
+.meeting-occurrence>summary{cursor:pointer;padding:1rem 0;font-weight:600}
+.meeting-occurrence>summary:focus-visible{outline:2px solid #6264a7;outline-offset:3px}
+.meeting-occurrence>.meeting{border:0;box-shadow:none;margin:0;padding:0 0 1rem}
 .regenerate-icon{display:inline-block}
 .regenerate-button.spinning .regenerate-icon{animation:noteiq-spin 1s linear infinite}
 @keyframes noteiq-spin{to{transform:rotate(360deg)}}

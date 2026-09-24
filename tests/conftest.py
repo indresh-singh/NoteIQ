@@ -19,6 +19,7 @@ SECRET = "sample-client-state-for-local-tests-only"
 def config(monkeypatch, tmp_path):
     # Keep provider tests independent from keys configured on the developer's machine.
     for key in (
+        "APP_ENV",
         "OPENAI_API_KEY",
         "OPENAI_MODEL",
         "OPENAI_MIN_REQUEST_INTERVAL_SECONDS",

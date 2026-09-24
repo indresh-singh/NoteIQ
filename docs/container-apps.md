@@ -62,8 +62,9 @@ Single mode keeps the old healthy revision until the new one is ready. Two activ
 during a failed rollout do not mean the replica limit was ignored: that limit is per revision.
 The explicit database override is necessary; an existing Azure environment variable overrides
 the Dockerfile default. If the new revision is unhealthy, inspect its logs. Use a new image tag
-and revision suffix for every release. `bash scripts/deploy.sh UNIQUE_TAG` performs these steps
-for the existing `noteiq` resource group.
+and revision suffix for every release. `bash scripts/deploy_prod.sh` performs these steps
+for the existing `noteiq` resource group and generates both values automatically. Use
+`bash scripts/deploy_dev.sh` for the shared DEV/TEST DAIO resources.
 
 This path uses the developer's current Azure login to push. Container Apps stores inferred ACR
 pull credentials when the registry is configured. If the final registry command cannot infer
@@ -143,7 +144,7 @@ In **Entra ID → App registrations → note-iq → Authentication**, add this *
 https://noteiq.DOMAIN-FROM-THE-COMMAND/auth/callback
 ```
 
-On the Mac, create or update `.env` with the same public URL. It is used only to build the Teams
+On the Mac, create or update `.env.prod` with the same public URL and set `APP_ENV=prod`. It is used only to build the Teams
 package locally:
 
 ```sh

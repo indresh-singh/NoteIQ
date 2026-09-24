@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Deploy NoteIQ to the DAIO development Azure Container App.
+# Shared Azure Container Apps deployment engine.
+# Use deploy_dev.sh or deploy_prod.sh rather than invoking this file directly.
 #
 # Run from the repository root:
-#   bash scripts/deploy_daio.sh [UNIQUE_TAG]
+#   bash scripts/deploy_dev.sh
+#   bash scripts/deploy_prod.sh
 #
-# Tags are immutable deployment identities: this script rejects a tag that is
-# already present in ACR or already names a Container App revision.
+# Every run generates a unique immutable image tag and revision suffix.
 #
-# The Graph and OpenAI API secrets must already be configured on the Container
-# App as secret references. This script intentionally never accepts or prints
-# either value.
+# Application settings come only from the selected .env file. Secret values are
+# stored as Container App secrets and are never printed.
 set -Eeuo pipefail
 
 trap 'status=$?; echo "Deployment failed at line $LINENO (exit $status)." >&2' ERR
@@ -80,45 +80,92 @@ if [[ -z "$docker_command" ]]; then
   exit 5
 fi
 
-readonly subscription_id="02fcef19-1aef-4374-8f4e-1d126a361dc8"
-readonly tenant_id="f0869253-be00-4a37-9c77-37742cb15c38"
-readonly graph_client_id="d6fc5dd5-578e-4ebd-a962-e16c84bd6be7"
-readonly graph_client_id_secret_name="graph-client-id"
-readonly openai_api_key_secret_name="openai-api-key"
-readonly teams_app_id="54bbd41a-9e11-4578-a658-7ec30577d393"
-readonly resource_group="rg-uaen-dev-daio-infra-001"
-readonly container_app="dev-daio-noteiq"
-readonly acr_name="uaedaioinfradev"
-readonly acr_server="${acr_name}.azurecr.io"
-readonly image_repository="noteiq"
-readonly min_replicas="${MIN_REPLICAS:-1}"
-readonly max_replicas="${MAX_REPLICAS:-10}"
-declare -ar container_args=(
-  --name "$container_app"
-  --resource-group "$resource_group"
-  --subscription "$subscription_id"
-)
-
-tag="${1:-}"
-generated_tag=false
-if [[ -z "$tag" ]]; then
-  # 7 + 12 + 7 + 4 = 30 characters: valid under the 32-character tag rule.
-  # The timestamp and source revision make deployments easy to trace; the
-  # random suffix prevents a collision between concurrent deployments of the
-  # same commit in the same second.
-  timestamp="$(date -u +%y%m%d%H%M%S)"
-  commit="$(git rev-parse --short=7 HEAD 2>/dev/null || printf 'nogit00')"
-  nonce="$(od -An -N2 -tx1 /dev/urandom | tr -d '[:space:]')"
-  tag="release${timestamp}${commit}${nonce}"
-  generated_tag=true
-fi
-if [[ ! "$tag" =~ ^[a-z][a-z0-9]{0,31}$ ]]; then
-  echo "Usage: bash scripts/deploy_daio.sh [UNIQUE_TAG]" >&2
-  echo "The tag must start with a lowercase letter and contain at most 32 lowercase letters/numbers." >&2
+readonly env_file="${NOTEIQ_ENV_FILE:?Use scripts/deploy_dev.sh or scripts/deploy_prod.sh}"
+readonly expected_app_env="${NOTEIQ_EXPECTED_APP_ENV:?Missing expected environment}"
+if [[ ! -f "$env_file" ]]; then
+  echo "Missing environment file: $env_file" >&2
   exit 2
 fi
 
+for name in \
+  APP_ENV \
+  NOTEIQ_DEPLOY_GRAPH_CLIENT_ID \
+  NOTEIQ_DEPLOY_GRAPH_CLIENT_SECRET \
+  NOTEIQ_DEPLOY_GRAPH_CLIENT_STATE \
+  NOTEIQ_DEPLOY_SUBSCRIPTION_ID \
+  NOTEIQ_DEPLOY_TENANT_ID \
+  NOTEIQ_DEPLOY_TEAMS_APP_ID \
+  NOTEIQ_DEPLOY_RESOURCE_GROUP \
+  NOTEIQ_DEPLOY_CONTAINER_APP \
+  NOTEIQ_DEPLOY_ACR_NAME \
+  GRAPH_CLIENT_SECRET \
+  GRAPH_CLIENT_STATE \
+  PUBLIC_BASE_URL \
+  NOTEIQ_DATABASE_URL \
+  NOTEIQ_BACKUP_DATABASE \
+  CLICKUP_CLIENT_ID \
+  CLICKUP_CLIENT_SECRET \
+  CLICKUP_TOKEN_KEY \
+  PLANNER_GRAPH_VERSION \
+  OPENROUTER_API_KEY \
+  OPENROUTER_MODEL \
+  OPENAI_API_KEY \
+  OPENAI_MODEL \
+  OPENAI_MIN_REQUEST_INTERVAL_SECONDS \
+  NOTEIQ_ROLE \
+  NOTEIQ_JOB_CONCURRENCY \
+  NOTEIQ_SUBSCRIPTION_CONCURRENCY \
+  NOTEIQ_MEETING_RETENTION_DAYS \
+  NOTEIQ_LOG_LEVEL \
+  MIN_REPLICAS \
+  MAX_REPLICAS; do
+  unset "$name"
+done
+
+# python-dotenv parses quoted values without evaluating shell syntax. NUL
+# delimiters preserve spaces and other characters in secrets.
+while IFS= read -r -d '' name && IFS= read -r -d '' value; do
+  export "$name=$value"
+done < <(
+  "$uv_command" run python -c \
+    'import os, sys; from dotenv import dotenv_values; values=dotenv_values(sys.argv[1], interpolate=False); [sys.stdout.buffer.write(k.encode()+b"\0"+(v or "").encode()+b"\0") for k,v in values.items()]' \
+    "$env_file"
+)
+
+if (( $# != 0 )); then
+  echo "This deployment command does not accept tags; a unique tag is generated automatically." >&2
+  exit 2
+fi
+
+readonly app_env="${APP_ENV:-$expected_app_env}"
+readonly subscription_id="${NOTEIQ_DEPLOY_SUBSCRIPTION_ID:?Missing NOTEIQ_DEPLOY_SUBSCRIPTION_ID in $env_file}"
+readonly tenant_id="${NOTEIQ_DEPLOY_TENANT_ID:?Missing NOTEIQ_DEPLOY_TENANT_ID in $env_file}"
+readonly graph_client_id="${NOTEIQ_DEPLOY_GRAPH_CLIENT_ID:?Missing NOTEIQ_DEPLOY_GRAPH_CLIENT_ID in $env_file}"
+readonly teams_app_id="${NOTEIQ_DEPLOY_TEAMS_APP_ID:?Missing NOTEIQ_DEPLOY_TEAMS_APP_ID in $env_file}"
+readonly graph_client_secret="${NOTEIQ_DEPLOY_GRAPH_CLIENT_SECRET:?Missing NOTEIQ_DEPLOY_GRAPH_CLIENT_SECRET in $env_file}"
+readonly graph_client_state="${NOTEIQ_DEPLOY_GRAPH_CLIENT_STATE:?Missing NOTEIQ_DEPLOY_GRAPH_CLIENT_STATE in $env_file}"
+readonly resource_group="${NOTEIQ_DEPLOY_RESOURCE_GROUP:?Missing NOTEIQ_DEPLOY_RESOURCE_GROUP in $env_file}"
+readonly container_app="${NOTEIQ_DEPLOY_CONTAINER_APP:?Missing NOTEIQ_DEPLOY_CONTAINER_APP in $env_file}"
+readonly acr_name="${NOTEIQ_DEPLOY_ACR_NAME:?Missing NOTEIQ_DEPLOY_ACR_NAME in $env_file}"
+readonly acr_server="${acr_name}.azurecr.io"
+readonly image_repository="noteiq"
+readonly min_replicas="${MIN_REPLICAS:-1}"
+readonly max_replicas="${MAX_REPLICAS:-1}"
+
+# 7 + 12 + 7 + 4 = 30 characters: valid under the 32-character tag rule.
+# Time and source revision aid traceability; the random suffix prevents a
+# collision between concurrent deployments of the same commit.
+timestamp="$(date -u +%y%m%d%H%M%S)"
+commit="$(git rev-parse --short=7 HEAD 2>/dev/null || printf 'nogit00')"
+nonce="$(od -An -N2 -tx1 /dev/urandom | tr -d '[:space:]')"
+readonly tag="release${timestamp}${commit}${nonce}"
+
 echo "Checking Docker and Azure access..."
+
+if [[ "$app_env" != "$expected_app_env" ]]; then
+  echo "$env_file must contain APP_ENV=$expected_app_env, not APP_ENV=$app_env." >&2
+  exit 2
+fi
 
 if ! [[ "$min_replicas" =~ ^[0-9]+$ && "$max_replicas" =~ ^[0-9]+$ ]]; then
   echo "MIN_REPLICAS and MAX_REPLICAS must be nonnegative integers." >&2
@@ -130,7 +177,7 @@ if (( min_replicas > max_replicas )); then
 fi
 
 if ! az account show --output none >/dev/null 2>&1; then
-  echo "Azure CLI is not signed in. Run: az login --tenant $tenant_id" >&2
+  echo "Azure CLI is not signed in. Run: az login" >&2
   exit 6
 fi
 
@@ -141,6 +188,12 @@ if [[ "$account_tenant" != "$tenant_id" ]]; then
   echo "Run: az login --tenant $tenant_id" >&2
   exit 7
 fi
+
+declare -ar container_args=(
+  --name "$container_app"
+  --resource-group "$resource_group"
+  --subscription "$subscription_id"
+)
 
 if ! az_tsv group show \
   --name "$resource_group" \
@@ -158,22 +211,9 @@ if [[ -z "$fqdn" ]]; then
   exit 8
 fi
 readonly public_base_url="https://${fqdn}"
-
-graph_secret_ref="$(az_tsv containerapp show "${container_args[@]}" \
-  --query "properties.template.containers[0].env[?name=='GRAPH_CLIENT_SECRET'] | [0].secretRef")"
-if [[ -z "$graph_secret_ref" ]]; then
-  echo "GRAPH_CLIENT_SECRET is not configured as a Container App secret reference." >&2
-  echo "Configure it securely in Azure before deploying; do not put the secret in this script." >&2
-  exit 9
-fi
-
-openai_secret_ref="$(az_tsv containerapp show "${container_args[@]}" \
-  --query "properties.template.containers[0].env[?name=='OPENAI_API_KEY'] | [0].secretRef")"
-if [[ -z "$openai_secret_ref" ]]; then
-  echo "OPENAI_API_KEY is not configured as a Container App secret reference." >&2
-  echo "Create the '$openai_api_key_secret_name' secret and bind OPENAI_API_KEY to it before deploying." >&2
-  echo "Do not put the API key in this script, an image layer, or a plain environment value." >&2
-  exit 14
+if [[ "${PUBLIC_BASE_URL%/}" != "$public_base_url" ]]; then
+  echo "PUBLIC_BASE_URL in $env_file does not match $container_app ($public_base_url)." >&2
+  exit 8
 fi
 
 readonly image="${acr_server}/${image_repository}:${tag}"
@@ -187,7 +227,7 @@ if az containerapp revision show "${container_args[@]}" \
   --revision "$revision_name" \
   --output none >/dev/null 2>&1; then
   echo "Refusing to reuse existing Container App revision: $revision_name" >&2
-  echo "Choose a new UNIQUE_TAG, for example: release0922a" >&2
+  echo "Run the deployment script again to generate a different tag." >&2
   exit 12
 fi
 
@@ -201,13 +241,12 @@ existing_tag="$(az_tsv acr repository show-tags \
   --query "[?@=='${tag}'] | [0]" 2>/dev/null || true)"
 if [[ "$existing_tag" == "$tag" ]]; then
   echo "Refusing to reuse existing ACR image tag: $image" >&2
-  echo "Choose a new UNIQUE_TAG, for example: release0922a" >&2
+  echo "Run the deployment script again to generate a different tag." >&2
   exit 13
 fi
 
-if [[ "$generated_tag" == true ]]; then
-  echo "Generated deployment tag: $tag"
-fi
+echo "Generated deployment tag: $tag"
+echo "Environment:   $app_env"
 echo "Tenant:        $tenant_id"
 echo "Subscription:  $subscription_id"
 echo "Resource group: $resource_group"
@@ -216,8 +255,11 @@ echo "Public origin:  $public_base_url"
 echo "Image:          $image"
 
 env -u VIRTUAL_ENV \
+APP_ENV="$app_env" \
 AZURE_TENANT_ID="$tenant_id" \
 GRAPH_CLIENT_ID="$graph_client_id" \
+GRAPH_CLIENT_SECRET="package-build-only" \
+GRAPH_CLIENT_STATE="package-build-only-client-state-00000000" \
 PUBLIC_BASE_URL="$public_base_url" \
 TEAMS_APP_ID="$teams_app_id" \
   "$uv_command" run python -m scripts.package_teams --app-id "$teams_app_id"
@@ -229,11 +271,57 @@ az acr login \
   --only-show-errors
 "$docker_command" push "$image"
 
-# Preserve the Container App's existing secret-reference convention. A client
-# ID is not confidential, but keeping it in the existing named secret avoids an
-# unnecessary environment-shape change between revisions.
+declare -a secret_values=(
+  "graph-client-secret=$graph_client_secret"
+  "graph-client-state=$graph_client_state"
+)
+declare -a update_env_vars=(
+  "APP_ENV=$app_env"
+  "AZURE_TENANT_ID=$tenant_id"
+  "GRAPH_CLIENT_ID=$graph_client_id"
+  "GRAPH_CLIENT_SECRET=secretref:graph-client-secret"
+  "GRAPH_CLIENT_STATE=secretref:graph-client-state"
+  "PUBLIC_BASE_URL=$public_base_url"
+  "TEAMS_APP_ID=$teams_app_id"
+)
+
+add_secret() {
+  local env_name="$1" secret_name="$2" value="${!1:-}"
+  if [[ -n "$value" ]]; then
+    secret_values+=("$secret_name=$value")
+    update_env_vars+=("$env_name=secretref:$secret_name")
+  fi
+}
+
+add_setting() {
+  local name="$1" value="${!1:-}"
+  if [[ -n "$value" ]]; then
+    update_env_vars+=("$name=$value")
+  fi
+}
+
+add_secret NOTEIQ_DATABASE_URL noteiq-database-url
+add_secret CLICKUP_CLIENT_SECRET clickup-client-secret
+add_secret CLICKUP_TOKEN_KEY clickup-token-key
+add_secret OPENROUTER_API_KEY openrouter-api-key
+add_secret OPENAI_API_KEY openai-api-key
+for name in \
+  CLICKUP_CLIENT_ID \
+  PLANNER_GRAPH_VERSION \
+  OPENROUTER_MODEL \
+  OPENAI_MODEL \
+  OPENAI_MIN_REQUEST_INTERVAL_SECONDS \
+  NOTEIQ_ROLE \
+  NOTEIQ_JOB_CONCURRENCY \
+  NOTEIQ_SUBSCRIPTION_CONCURRENCY \
+  NOTEIQ_MEETING_RETENTION_DAYS \
+  NOTEIQ_BACKUP_DATABASE \
+  NOTEIQ_LOG_LEVEL; do
+  add_setting "$name"
+done
+
 az containerapp secret set "${container_args[@]}" \
-  --secrets "${graph_client_id_secret_name}=${graph_client_id}" \
+  --secrets "${secret_values[@]}" \
   --only-show-errors \
   --output none
 
@@ -246,14 +334,7 @@ az containerapp update "${container_args[@]}" \
   --revision-suffix "$tag" \
   --min-replicas "$min_replicas" \
   --max-replicas "$max_replicas" \
-  --set-env-vars \
-    "AZURE_TENANT_ID=$tenant_id" \
-    "GRAPH_CLIENT_ID=secretref:$graph_client_id_secret_name" \
-    "OPENAI_API_KEY=secretref:$openai_secret_ref" \
-    "OPENAI_MODEL=gpt-5.6-luna" \
-    "OPENAI_MIN_REQUEST_INTERVAL_SECONDS=30" \
-    "PUBLIC_BASE_URL=$public_base_url" \
-    "TEAMS_APP_ID=$teams_app_id" \
+  --set-env-vars "${update_env_vars[@]}" \
   --only-show-errors \
   --output none
 
@@ -283,4 +364,4 @@ fi
 
 echo "Deployment completed: $revision_name is Healthy."
 echo "Open: $public_base_url"
-echo "PostgreSQL data and all existing Container App secret references were preserved."
+echo "Container App settings were loaded from $env_file."

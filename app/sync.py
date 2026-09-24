@@ -619,6 +619,24 @@ async def sync_meeting(event, graph, store, found: dict | None = None):
             known.update(item[kind].get("source_id") for item in saved.get(kind + "s", []))
             items = await graph.list(resource)
             fresh = [item["id"] for item in items if item["id"] not in known]
+            if kind == "transcript":
+                # Upgrade historical records once through the normal transcript
+                # pipeline. This recovers callId and regenerates isolated results.
+                missing_metadata = {
+                    alias
+                    for entry in saved.get("transcripts", [])
+                    if not entry["transcript"].get("session_metadata_checked")
+                    for alias in (
+                        entry["transcript"].get("id"),
+                        entry["transcript"].get("source_id"),
+                    )
+                    if alias
+                }
+                fresh = list(
+                    dict.fromkeys(
+                        [*fresh, *(item["id"] for item in items if item["id"] in missing_metadata)]
+                    )
+                )
             if found is not None and kind == "insight":
                 found["new_insights"] += len(fresh)
             store.enqueue(

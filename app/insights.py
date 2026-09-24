@@ -45,6 +45,7 @@ async def process_insight(event: InsightEvent, graph: GraphClient, store: Store)
                     subject,
                     {
                         "meeting_id": event.meeting_id,
+                        "meeting_metadata": {"meeting_type": meeting.get("meetingType")},
                         "insight": {
                             **insight.model_dump(mode="json"),
                             "source_id": event.insight_id,

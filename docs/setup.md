@@ -24,7 +24,7 @@ Open **Microsoft Entra ID → App registrations → note-iq**.
 
 Click **Grant admin consent** and confirm all required entries show consent granted. Transcript collection requires the application transcript permission above. For Teams Activity notifications, install the updated package using [these setup steps](transcripts-and-messages.md). You do not need to configure **Expose an API** for this popup-based version.
 
-The registered redirect URI must exactly match `PUBLIC_BASE_URL` plus `/auth/callback`. If the public hostname changes, update Entra, `.env` and the generated Teams package together. Expired Graph subscriptions on an old hostname may remain until their one-hour expiry.
+The registered redirect URI must exactly match `PUBLIC_BASE_URL` plus `/auth/callback`. If the public hostname changes, update Entra, the selected `.env.dev` or `.env.prod`, and the generated Teams package together. Expired Graph subscriptions on an old hostname may remain until their one-hour expiry.
 
 Microsoft references: [register a web redirect](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app), [tab popup authentication](https://learn.microsoft.com/en-us/microsoftteams/platform/tabs/how-to/authentication/auth-tab-aad), [meeting insights permissions](https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/api/ai-services/meeting-insights/callaiinsight-get).
 
@@ -47,8 +47,9 @@ Allow up to **30 minutes** for the policy to propagate. If `Get-CsTenant` fails,
 If your ChatGPT Enterprise organization provides an OpenAI API project key, add these
 Container App environment variables as secret references where appropriate:
 
-For local development, put `OPENAI_API_KEY` in the ignored `.env` file at the repository
-root; `app.config.settings()` loads it automatically. Never commit that file.
+For local development, put `OPENAI_API_KEY` in the ignored `.env.dev` file at the repository
+root; `app.config.settings()` loads it when `APP_ENV=dev` or `APP_ENV=stg`. Production uses
+the separate ignored `.env.prod` file. Never commit either file.
 
 | Name | Value |
 |---|---|
@@ -68,10 +69,10 @@ In the NoteIQ project folder on your Mac:
 
 ```sh
 uv sync --locked
-uv run python -m scripts.configure
+APP_ENV=dev uv run python -m scripts.configure --app-env dev
 ```
 
-Enter the tenant ID, note-iq client ID, client secret Value and public HTTPS origin when prompted. The helper writes a private `.env` and generates the webhook secret. If `.env` exists, edit it instead; the helper preserves existing credentials.
+Enter the tenant ID, note-iq client ID, client secret Value and public HTTPS origin when prompted. The helper writes a private `.env.dev` and generates the webhook secret. If it exists, edit it instead; the helper preserves existing credentials. Use `--app-env prod` to create `.env.prod`; `stg` intentionally routes to `.env.dev`.
 
 Build the Teams package:
 

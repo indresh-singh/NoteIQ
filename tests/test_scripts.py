@@ -1,12 +1,32 @@
 import io
 import sqlite3
 import tarfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
 from scripts import configure, migrate_database, serve, vendor_assets
+
+
+def test_environment_deploy_commands_generate_tags_internally():
+    root = Path(__file__).resolve().parents[1]
+    dev = (root / "scripts/deploy_dev.sh").read_text()
+    prod = (root / "scripts/deploy_prod.sh").read_text()
+    engine = (root / "scripts/deploy_daio.sh").read_text()
+
+    assert 'NOTEIQ_EXPECTED_APP_ENV="dev"' in dev
+    assert 'NOTEIQ_EXPECTED_APP_ENV="prod"' in prod
+    assert '.env.dev' in dev
+    assert '.env.prod' in prod
+    assert "NOTEIQ_DEPLOY_GRAPH_CLIENT_ID" not in dev + prod
+    assert "NOTEIQ_DEPLOY_SUBSCRIPTION_ID" in engine
+    assert "NOTEIQ_DEPLOY_GRAPH_CLIENT_SECRET" in engine
+    assert "NOTEIQ_DEPLOY_GRAPH_CLIENT_STATE" in engine
+    assert "UNIQUE_TAG" not in dev + prod
+    assert "dotenv_values" in engine
+    assert 'readonly tag="release${timestamp}${commit}${nonce}"' in engine
 
 
 def test_configure_writes_validated_single_line_environment(monkeypatch, tmp_path):
@@ -21,10 +41,11 @@ def test_configure_writes_validated_single_line_environment(monkeypatch, tmp_pat
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
     monkeypatch.setattr(configure.getpass, "getpass", lambda prompt="": "secret'value")
     monkeypatch.setattr(configure.secrets, "token_urlsafe", lambda size: "generated-state")
+    monkeypatch.setattr("sys.argv", ["configure"])
 
     configure.main()
 
-    assert (tmp_path / ".env").read_text().splitlines() == [
+    assert (tmp_path / ".env.dev").read_text().splitlines() == [
         "AZURE_TENANT_ID='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'",
         "GRAPH_CLIENT_ID='bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'",
         "GRAPH_CLIENT_SECRET='secret\\'value'",
@@ -34,9 +55,10 @@ def test_configure_writes_validated_single_line_environment(monkeypatch, tmp_pat
 
 
 def test_configure_never_overwrites_existing_credentials(monkeypatch, tmp_path):
-    path = tmp_path / ".env"
+    path = tmp_path / ".env.dev"
     path.write_text("KEEP=me\n")
     monkeypatch.setattr(configure, "ROOT", tmp_path)
+    monkeypatch.setattr("sys.argv", ["configure", "--app-env", "stg"])
 
     with pytest.raises(SystemExit, match="already exists"):
         configure.main()

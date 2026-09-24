@@ -38,6 +38,7 @@ from app.graph_client import GraphBusy, GraphClient, busy_from, interactive_requ
 from app.models import InsightEvent, TranscriptEvent, UserSync, parse_event
 from app.notifications import validate_notifications
 from app.observability import log_context, safe_correlation_id
+from app.occurrences import present_meeting, select_session, transcript_version
 from app.openai import OpenAI, OpenAIProviderError
 from app.openrouter import MAX_TRANSCRIPT_CHARS, OpenRouter
 from app.planner import Planner
@@ -66,6 +67,7 @@ class ClickUpList(BaseModel):
 
 
 class ClickUpExport(BaseModel):
+    occurrence_id: str | None = Field(default=None, max_length=2048)
     list_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9]+$", max_length=64)
     # "openai" was missing here even after OpenAI became a summary provider;
     # filtering an export by it would 422 despite such insights existing.
@@ -83,6 +85,7 @@ class PlannerPlan(BaseModel):
 
 
 class PlannerExport(BaseModel):
+    occurrence_id: str | None = Field(default=None, max_length=2048)
     plan_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,100}$")
     provider: Literal["copilot", "openrouter", "openai"] | None = None
 
@@ -94,6 +97,7 @@ class CustomTranscript(BaseModel):
 
 
 class RegenerateInsight(BaseModel):
+    occurrence_id: str | None = Field(default=None, max_length=2048)
     provider: Literal["openrouter", "openai"] | None = None
 
 
@@ -158,6 +162,28 @@ def actions(content: dict, provider: str | None = None) -> list[dict]:
         for action in item.get("insight", {}).get("actionItems", [])
         if action.get("title") or action.get("text")
     ]
+
+
+def scoped_meeting(meeting: dict | None, occurrence_id: str | None) -> dict:
+    if not meeting:
+        raise HTTPException(404, "Meeting not found.")
+    try:
+        content = select_session(meeting["content"], occurrence_id)
+    except KeyError:
+        raise HTTPException(404, "Meeting session not found.") from None
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from None
+    subject = meeting["subject"]
+    if content.get("started_at"):
+        subject += " — " + content["started_at"]
+    return {**meeting, "subject": subject, "content": content}
+
+
+def export_identity(content: dict) -> str:
+    identity = content.get("meeting_id") or ""
+    if content.get("occurrence_id"):
+        identity += ":" + content["occurrence_id"]
+    return identity
 
 
 def create_app(
@@ -689,6 +715,7 @@ def create_app(
             raise HTTPException(400, "Unknown ClickUp List. Add it in Account settings first.")
         if not meeting:
             raise HTTPException(404, "Meeting not found.")
+        meeting = scoped_meeting(meeting, body.occurrence_id)
         created = skipped = 0
         try:
             token = client.decrypt(connection["token"])
@@ -696,7 +723,7 @@ def create_app(
                 raw = "|".join(
                     (
                         list_id,
-                        meeting["content"].get("meeting_id") or "",
+                        export_identity(meeting["content"]),
                         action.get("title") or "",
                         action.get("text") or "",
                         action.get("ownerDisplayName") or "",
@@ -911,13 +938,14 @@ def create_app(
             raise HTTPException(400, "Unknown Planner plan. Add it in Account settings first.")
         if not meeting:
             raise HTTPException(404, "Meeting not found.")
+        meeting = scoped_meeting(meeting, body.occurrence_id)
         created = skipped = 0
         try:
             for action in actions(meeting["content"], body.provider):
                 raw = "|".join(
                     (
                         plan_id,
-                        meeting["content"].get("meeting_id") or "",
+                        export_identity(meeting["content"]),
                         action.get("title") or "",
                         action.get("text") or "",
                         action.get("ownerDisplayName") or "",
@@ -1000,7 +1028,7 @@ def create_app(
 
     @app.get("/api/meetings")
     async def meetings(request: Request, user: dict = Depends(current_user)):
-        return request.app.state.store.meetings(user["id"])
+        return [present_meeting(m) for m in request.app.state.store.meetings(user["id"])]
 
     @app.post("/api/transcripts/upload")
     async def upload_transcript(
@@ -1094,17 +1122,17 @@ def create_app(
         meeting = store.meeting(user["id"], meeting_id)
         if not meeting:
             raise HTTPException(404, "Meeting not found.")
+        selected = scoped_meeting(meeting, body.occurrence_id)
         config = settings()
         provider = body.provider or config.summary_provider
         if provider not in config.external_summary_providers:
             raise HTTPException(409, "Configure the selected AI provider to regenerate insights.")
-        transcripts = meeting["content"].get("transcripts") or []
+        transcripts = selected["content"].get("transcripts") or []
         if not transcripts:
             raise HTTPException(409, "No transcript available to summarize yet.")
         latest = transcripts[-1]["transcript"]
-        # Summarise every segment, not just the last: a meeting whose
-        # transcription was stopped and restarted is only whole in combination.
-        text = meeting_transcript_text(store, user["id"], meeting["content"])
+        # Join only the selected call's segments, including transcription restarts.
+        text = meeting_transcript_text(store, user["id"], selected["content"])
         if not text:
             raise HTTPException(404, "Transcript content not found.")
         event = TranscriptEvent(
@@ -1121,6 +1149,8 @@ def create_app(
                 text,
                 provider=provider,
                 raise_on_failure=True,
+                occurrence_id=body.occurrence_id,
+                source_version=transcript_version(selected["content"]),
             )
         except OpenAIProviderError as error:
             raise HTTPException(
@@ -1129,7 +1159,7 @@ def create_app(
             ) from None
         if not ok:
             raise HTTPException(502, "The AI provider could not generate a summary. Try again.")
-        return store.meeting(user["id"], meeting_id)
+        return present_meeting(store.meeting(user["id"], meeting_id))
 
     @app.post("/api/sync")
     async def sync(request: Request, user: dict = Depends(current_user)):

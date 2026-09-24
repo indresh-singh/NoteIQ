@@ -202,14 +202,19 @@ class TestSecondSegmentEndToEnd:
             "Split",
             {
                 "meeting_id": "sample-meeting",
-                "transcript": {"id": "t1", "local_id": first, "createdDateTime": stamp(2)},
+                "transcript": {
+                    "id": "t1",
+                    "local_id": first,
+                    "createdDateTime": stamp(2),
+                    "callId": "call1",
+                },
             },
         )
 
         graph = AsyncMock()
         graph.request.side_effect = [
             samples["meeting"],
-            {"id": "t2", "createdDateTime": stamp(1)},
+            {"id": "t2", "createdDateTime": stamp(1), "callId": "call1"},
             "WEBVTT\nsecond half",
         ]
         second = TranscriptEvent(user_id=USER, meeting_id="sample-meeting", transcript_id="t2")
@@ -217,7 +222,7 @@ class TestSecondSegmentEndToEnd:
 
         # The model saw the whole meeting, in order, not just the new segment.
         assert seen["text"] == "WEBVTT\nfirst half\n\nWEBVTT\nsecond half"
-        assert seen["key"] == "sample-meeting"
+        assert seen["key"] == "sample-meeting:call:call1"
 
         content = store.meetings(USER)[0]["content"]
         assert len(content["transcripts"]) == 2

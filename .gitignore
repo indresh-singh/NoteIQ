@@ -5,6 +5,10 @@ __pycache__/
 local.settings.json
 .env
 .env.container
+.env.dev
+.env.prod
+!.env.dev.example
+!.env.prod.example
 *.pem
 *.pfx
 *.key
@@ -15,3 +19,4 @@ dist/
 data/
 scripts/grant_access.ps1
 docs/AZURE RESOURCES
+.env.dev.example

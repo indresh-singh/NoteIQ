@@ -61,7 +61,7 @@ organizer filtering, or lost local storage. A healthy `/healthz` alone does not 
 ## 3. Run the Python backend locally if needed
 
 For direct Graph requests above, no local server, Docker, tunnel or Azure shell is needed.
-To inspect the Python app itself, use the existing `.env` and run:
+To inspect the Python app itself, select the existing `.env.dev` and run:
 
 ```sh
 NOTEIQ_DATABASE=data/local-debug.sqlite3 uv run python -m scripts.serve

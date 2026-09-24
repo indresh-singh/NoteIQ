@@ -94,8 +94,8 @@ Set these normal Container App environment variables:
 
 | Variable | Value |
 |---|---|
-| `AZURE_TENANT_ID` | See `.env` — this is the single source of truth; do not duplicate the value in docs |
-| `GRAPH_CLIENT_ID` | See `.env` — this is the single source of truth; do not duplicate the value in docs |
+| `AZURE_TENANT_ID` | See the selected `.env.dev` or `.env.prod` — do not duplicate the value in docs |
+| `GRAPH_CLIENT_ID` | See the selected `.env.dev` or `.env.prod` — do not duplicate the value in docs |
 | `TEAMS_APP_ID` | Stable Teams package ID; normally the same as `GRAPH_CLIENT_ID` |
 | `PUBLIC_BASE_URL` | `https://noteiq.salmontree-16ed39aa.uaenorth.azurecontainerapps.io` |
 | `CLICKUP_CLIENT_ID` | Optional ClickUp OAuth client ID |
@@ -151,8 +151,8 @@ Use the existing single-tenant app registration:
 
 | Item | Value |
 |---|---|
-| Application/client ID | See `.env`'s `GRAPH_CLIENT_ID` — single source of truth |
-| Tenant ID | See `.env`'s `AZURE_TENANT_ID` — single source of truth |
+| Application/client ID | See the selected environment file's `GRAPH_CLIENT_ID` |
+| Tenant ID | See the selected environment file's `AZURE_TENANT_ID` |
 | Supported accounts | Accounts in this organizational directory only |
 
 Configure the following Web redirect URI:
@@ -242,10 +242,12 @@ and private DNS before disabling public database access.
 
 ## Release procedure
 
-Run from the repository root. Each release requires a new lowercase tag.
+Run the appropriate zero-argument command from the repository root. Each script generates
+a unique immutable image tag and Container Apps revision suffix automatically.
 
 ```sh
-bash scripts/deploy.sh release20260916a
+bash scripts/deploy_dev.sh   # shared DEV/TEST resources
+bash scripts/deploy_prod.sh  # production resources
 ```
 
 The script:

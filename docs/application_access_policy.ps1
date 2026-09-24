@@ -1,5 +1,5 @@
-$TenantId  = ""   # AZURE_TENANT_ID from .env
-$AppId     = ""   # GRAPH_CLIENT_ID from .env
+$TenantId  = ""   # AZURE_TENANT_ID from .env.dev or .env.prod
+$AppId     = ""   # GRAPH_CLIENT_ID from .env.dev or .env.prod
 $UserId    = ""   # user's object ID
 
 $PolicyName = "NoteIQ-Pilot"

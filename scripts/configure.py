@@ -1,17 +1,30 @@
-"""Create local configuration without putting the client secret in shell history."""
+"""Create environment configuration without putting secrets in shell history."""
 
+import argparse
 import getpass
+import os
 import secrets
 from uuid import UUID
 
-from app.config import ROOT, Settings
+from app.config import ROOT, Settings, app_environment
 
 
 def main():
-    path = ROOT / ".env"
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--app-env",
+        choices=("dev", "stg", "prod"),
+        default=os.getenv("APP_ENV", "dev").lower(),
+        help="Configuration to create; dev and stg share .env.dev",
+    )
+    args = parser.parse_args()
+    os.environ["APP_ENV"] = args.app_env
+    environment = app_environment()
+    tier = "prod" if environment == "prod" else "dev"
+    path = ROOT / f".env.{tier}"
     if path.exists():
         raise SystemExit(
-            ".env already exists. Edit it directly; existing credentials were preserved."
+            f"{path.name} already exists. Edit it directly; existing credentials were preserved."
         )
     print("Use the note-iq app registration in your Microsoft 365 tenant.")
     tenant = UUID(input("Directory (tenant) ID: ").strip())
@@ -24,6 +37,7 @@ def main():
     )
     state = secrets.token_urlsafe(48)
     Settings(
+        app_env=environment,
         tenant_id=tenant,
         graph_client_id=client,
         graph_secret=secret,
@@ -58,7 +72,7 @@ def main():
         for key, value in values.items():
             quoted = value.replace("\\", "\\\\").replace("'", "\\'")
             output.write(f"{key}='{quoted}'\n")
-    print("Saved .env. Add this Web redirect URI in Entra → note-iq → Authentication:")
+    print(f"Saved {path.name}. Add this Web redirect URI in Entra → note-iq → Authentication:")
     print(url + "/auth/callback")
 
 

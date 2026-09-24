@@ -1,7 +1,7 @@
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -9,9 +9,35 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, SecretStr
 
 ROOT = Path(__file__).resolve().parents[1]
+AppEnvironment = Literal["dev", "stg", "prod"]
+
+
+def app_environment() -> AppEnvironment:
+    """Return the selected deployment environment."""
+    value = os.getenv("APP_ENV", "dev").strip().lower()
+    if value not in {"dev", "stg", "prod"}:
+        raise ValueError("APP_ENV must be one of: dev, stg, prod")
+    return cast(AppEnvironment, value)
+
+
+def environment_file(environment: AppEnvironment) -> Path:
+    """Map DEV/STG to one file and PROD to the other."""
+    tier = "prod" if environment == "prod" else "dev"
+    return ROOT / f".env.{tier}"
+
+
+def environment_value(name: str, deploy_name: str | None = None) -> str:
+    """Read a runtime setting, accepting its deployment-file alias."""
+    value = os.getenv(name)
+    if value is None and deploy_name is not None:
+        value = os.getenv(deploy_name)
+    if value is None:
+        raise KeyError(name)
+    return value
 
 
 class Settings(BaseModel):
+    app_env: AppEnvironment = "dev"
     tenant_id: UUID
     graph_client_id: UUID
     graph_secret: SecretStr
@@ -94,17 +120,29 @@ class Settings(BaseModel):
 
 @lru_cache
 def settings() -> Settings:
-    load_dotenv(ROOT / ".env", interpolate=False)
+    environment = app_environment()
+    load_dotenv(environment_file(environment), interpolate=False)
     config = Settings(
-        tenant_id=os.environ["AZURE_TENANT_ID"],
-        graph_client_id=os.environ["GRAPH_CLIENT_ID"],
-        graph_secret=os.environ["GRAPH_CLIENT_SECRET"],
-        client_state=os.environ["GRAPH_CLIENT_STATE"],
+        app_env=environment,
+        tenant_id=environment_value("AZURE_TENANT_ID", "NOTEIQ_DEPLOY_TENANT_ID"),
+        graph_client_id=environment_value(
+            "GRAPH_CLIENT_ID", "NOTEIQ_DEPLOY_GRAPH_CLIENT_ID"
+        ),
+        graph_secret=environment_value(
+            "GRAPH_CLIENT_SECRET", "NOTEIQ_DEPLOY_GRAPH_CLIENT_SECRET"
+        ),
+        client_state=environment_value(
+            "GRAPH_CLIENT_STATE", "NOTEIQ_DEPLOY_GRAPH_CLIENT_STATE"
+        ),
         public_url=os.environ["PUBLIC_BASE_URL"].rstrip("/"),
         database=os.getenv("NOTEIQ_DATABASE", str(ROOT / "data/noteiq.sqlite3")),
         backup_database=os.getenv("NOTEIQ_BACKUP_DATABASE") or None,
         database_url=os.getenv("NOTEIQ_DATABASE_URL") or None,
-        teams_app_id=os.getenv("TEAMS_APP_ID") or None,
+        teams_app_id=(
+            os.getenv("TEAMS_APP_ID")
+            or os.getenv("NOTEIQ_DEPLOY_TEAMS_APP_ID")
+            or None
+        ),
         clickup_client_id=os.getenv("CLICKUP_CLIENT_ID") or None,
         clickup_client_secret=os.getenv("CLICKUP_CLIENT_SECRET") or None,
         clickup_token_key=os.getenv("CLICKUP_TOKEN_KEY") or None,
