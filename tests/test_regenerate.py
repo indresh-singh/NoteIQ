@@ -1,5 +1,6 @@
 from app.config import settings
 from app.models import Insight
+from app.openai import OpenAIProviderError
 from tests.conftest import USER
 
 
@@ -121,3 +122,32 @@ def test_regenerate_surfaces_openrouter_failure(monkeypatch, client, store, sign
 
     response = client.post(f"/api/meetings/{meeting_id}/regenerate", headers=signed_in, json={})
     assert response.status_code == 502
+
+
+def test_regenerate_surfaces_the_openai_error_code(monkeypatch, client, store, signed_in):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-enterprise-test")
+    settings.cache_clear()
+
+    class IncompleteOpenAI:
+        def __init__(self, config):
+            pass
+
+        async def summarize(self, transcript_id, subject, text):
+            raise OpenAIProviderError(
+                "OPENAI_RESPONSE_INCOMPLETE_MAX_OUTPUT_TOKENS",
+                "OpenAI returned an incomplete response.",
+            )
+
+    monkeypatch.setattr("app.transcripts.OpenAI", IncompleteOpenAI)
+    meeting_id = seed_meeting_with_transcript(store)
+
+    response = client.post(
+        f"/api/meetings/{meeting_id}/regenerate",
+        headers=signed_in,
+        json={"provider": "openai"},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"].endswith(
+        "Error code: OPENAI_RESPONSE_INCOMPLETE_MAX_OUTPUT_TOKENS."
+    )

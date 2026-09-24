@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from app.config import settings
-from app.openai import MAX_OUTPUT_TOKENS, MAX_TRANSCRIPT_CHARS, MEETING_SUMMARY_FORMAT, OpenAI
+from app.openai import MAX_OUTPUT_TOKENS, MEETING_SUMMARY_FORMAT, OpenAI, OpenAIProviderError
 
 
 def enable_openai(monkeypatch):
@@ -25,7 +25,9 @@ def mock_client(monkeypatch, handle):
 async def test_openai_uses_responses_api_and_parses_output_text(monkeypatch):
     enable_openai(monkeypatch)
     payloads = []
-    transcript = "x" * 60_000
+    # Longer than the former 60,000-character cap: the full transcript must
+    # reach the provider without application-side truncation.
+    transcript = "x" * 60_001
 
     def handle(request):
         assert request.url == httpx.URL("https://api.openai.com/v1/responses")
@@ -49,6 +51,7 @@ async def test_openai_uses_responses_api_and_parses_output_text(monkeypatch):
     assert insight.actionItems[0].ownerDisplayName == "Ada"
     assert payloads[0]["model"] == "gpt-5.6-luna"
     assert payloads[0]["max_output_tokens"] == MAX_OUTPUT_TOKENS
+    assert MAX_OUTPUT_TOKENS == 10_000
     assert payloads[0]["text"] == {
         "format": MEETING_SUMMARY_FORMAT,
         "verbosity": "high",
@@ -59,11 +62,12 @@ async def test_openai_uses_responses_api_and_parses_output_text(monkeypatch):
     assert schema["schema"]["additionalProperties"] is False
     assert payloads[0]["reasoning"] == {"effort": "medium"}
     assert payloads[0]["store"] is True
-    assert MAX_TRANSCRIPT_CHARS == 60_000
     assert f"<transcript>\n{transcript}\n</transcript>" in payloads[0]["input"][1]["content"]
     assert "detailed, structured, decision-useful record" in payloads[0]["input"][0]["content"]
     note_schema = schema["schema"]["properties"]["meetingNotes"]["items"]
     assert note_schema["properties"]["subpoints"]["items"]["type"] == "object"
+    assert list(schema["schema"]["properties"])[0] == "actionItems"
+    assert "direct requests, assignments, agreed next steps" in payloads[0]["input"][0]["content"]
 
 
 async def test_openai_parses_the_rest_api_output_array(monkeypatch):
@@ -91,9 +95,72 @@ async def test_openai_parses_the_rest_api_output_array(monkeypatch):
     assert insight.id == "openai:meeting-1"
 
 
+async def test_openai_classifies_and_logs_an_incomplete_response(monkeypatch, caplog):
+    enable_openai(monkeypatch)
+    mock_client(
+        monkeypatch,
+        lambda request: httpx.Response(
+            200,
+            json={
+                "id": "resp_test",
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "max_output_tokens": 10_000,
+                "output_text": '{"actionItems":[{"text":"private partial text',
+                "usage": {
+                    "input_tokens": 12_000,
+                    "output_tokens": 10_000,
+                    "output_tokens_details": {"reasoning_tokens": 2_000},
+                },
+            },
+        ),
+    )
+
+    with pytest.raises(OpenAIProviderError) as caught:
+        await OpenAI(settings()).summarize("meeting-1", "Planning", "Hello")
+
+    assert caught.value.code == "OPENAI_RESPONSE_INCOMPLETE_MAX_OUTPUT_TOKENS"
+    assert "error_code=OPENAI_RESPONSE_INCOMPLETE_MAX_OUTPUT_TOKENS" in caplog.text
+    assert "response_status=incomplete" in caplog.text
+    assert "input_tokens=12000 output_tokens=10000 reasoning_tokens=2000" in caplog.text
+    assert "private partial text" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("response", "code"),
+    [
+        (
+            {
+                "status": "completed",
+                "output": [
+                    {"type": "message", "content": [{"type": "refusal", "refusal": "No"}]}
+                ],
+            },
+            "OPENAI_RESPONSE_REFUSED",
+        ),
+        ({"status": "completed", "output": []}, "OPENAI_RESPONSE_EMPTY"),
+        (
+            {"status": "completed", "output_text": '{"actionItems":["unfinished"'},
+            "OPENAI_RESPONSE_INVALID_JSON",
+        ),
+    ],
+)
+async def test_openai_classifies_other_unusable_responses(monkeypatch, response, code):
+    enable_openai(monkeypatch)
+    mock_client(monkeypatch, lambda request: httpx.Response(200, json=response))
+
+    with pytest.raises(OpenAIProviderError) as caught:
+        await OpenAI(settings()).summarize("meeting-1", "Planning", "Hello")
+
+    assert caught.value.code == code
+
+
 @pytest.mark.parametrize("status,message", [(401, "rejected"), (429, "rate-limited")])
 async def test_openai_surfaces_safe_http_errors(monkeypatch, status, message):
     enable_openai(monkeypatch)
     mock_client(monkeypatch, lambda request: httpx.Response(status))
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(OpenAIProviderError, match=message) as caught:
         await OpenAI(settings()).summarize("meeting-1", "Planning", "Hello")
+    assert caught.value.code == (
+        "OPENAI_HTTP_AUTH_REJECTED" if status == 401 else "OPENAI_HTTP_RATE_LIMITED"
+    )

@@ -38,7 +38,7 @@ from app.graph_client import GraphBusy, GraphClient, busy_from, interactive_requ
 from app.models import InsightEvent, TranscriptEvent, UserSync, parse_event
 from app.notifications import validate_notifications
 from app.observability import log_context, safe_correlation_id
-from app.openai import OpenAI
+from app.openai import OpenAI, OpenAIProviderError
 from app.openrouter import MAX_TRANSCRIPT_CHARS, OpenRouter
 from app.planner import Planner
 from app.planner_identity import PLANNER_SCOPES, DelegatedGraph, cache_cipher, delegated_token
@@ -1112,9 +1112,21 @@ def create_app(
             meeting_id=meeting["content"]["meeting_id"],
             transcript_id=latest["id"],
         )
-        ok = await summarize_with_ai(
-            store, user["id"], event, meeting["subject"], text, provider=provider
-        )
+        try:
+            ok = await summarize_with_ai(
+                store,
+                user["id"],
+                event,
+                meeting["subject"],
+                text,
+                provider=provider,
+                raise_on_failure=True,
+            )
+        except OpenAIProviderError as error:
+            raise HTTPException(
+                502,
+                f"ChatGPT Enterprise could not generate a summary. Error code: {error.code}.",
+            ) from None
         if not ok:
             raise HTTPException(502, "The AI provider could not generate a summary. Try again.")
         return store.meeting(user["id"], meeting_id)

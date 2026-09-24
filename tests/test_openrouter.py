@@ -51,6 +51,36 @@ async def test_summarize_parses_model_reply(monkeypatch):
     assert insight.actionItems[0].ownerDisplayName == "Ada"
 
 
+async def test_summarize_normalizes_literal_null_strings(monkeypatch):
+    enable_openrouter(monkeypatch)
+
+    def handle(request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"meetingNotes": [{"title": "null", "text": "UI update"}], '
+                                '"actionItems": [{"title": "NULL", "text": "Retest", '
+                                '"ownerDisplayName": "null", "dueDate": " null "}]}'
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    mock_client(monkeypatch, handle)
+    insight = await OpenRouter(settings()).summarize("transcript-1", "UI review", "hello")
+
+    assert insight.meetingNotes[0].title is None
+    assert insight.actionItems[0].title is None
+    assert insight.actionItems[0].ownerDisplayName is None
+    assert insight.actionItems[0].dueDate is None
+
+
 async def test_summarize_keeps_due_date_when_the_model_provides_one(monkeypatch):
     enable_openrouter(monkeypatch)
 

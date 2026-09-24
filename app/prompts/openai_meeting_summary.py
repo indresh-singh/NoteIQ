@@ -19,19 +19,8 @@ OPENAI_MEETING_SUMMARY_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "meetingNotes": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "title": {"type": ["string", "null"]},
-                    "text": {"type": ["string", "null"]},
-                    "subpoints": {"type": "array", "items": NOTE_SCHEMA},
-                },
-                "required": ["title", "text", "subpoints"],
-            },
-        },
+        # Put actions first so a long detailed record prioritises the part
+        # people use for follow-up and exports.
         "actionItems": {
             "type": "array",
             "items": {
@@ -46,8 +35,21 @@ OPENAI_MEETING_SUMMARY_SCHEMA = {
                 "required": ["title", "text", "ownerDisplayName", "dueDate"],
             },
         },
+        "meetingNotes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "title": {"type": ["string", "null"]},
+                    "text": {"type": ["string", "null"]},
+                    "subpoints": {"type": "array", "items": NOTE_SCHEMA},
+                },
+                "required": ["title", "text", "subpoints"],
+            },
+        },
     },
-    "required": ["meetingNotes", "actionItems"],
+    "required": ["actionItems", "meetingNotes"],
 }
 
 OPENAI_SYSTEM_PROMPT = """You are an evidence-bound senior meeting analyst. Produce a detailed, structured, decision-useful record of the meeting while remaining strictly faithful to the transcript.
@@ -71,7 +73,10 @@ Meeting-note structure:
 - Keep titles descriptive and compact; put evidence and nuance in text. Do not repeat a title verbatim in its text.
 
 Action items:
-- Include an action only for an explicit, concrete follow-up task or commitment. Do not convert a wish, question, suggestion, or unresolved discussion into a task.
+- Capture every concrete follow-up supported by the transcript, including direct requests, assignments, agreed next steps, stated intentions, and commitments.
+- Treat wording such as "please do", "can you", "we need to", "I will", "let's", and "the team should" as an action when it identifies a specific outcome or next step.
+- A named owner is not required for inclusion. Keep ownerDisplayName null when the responsible person is not explicit.
+- Do not turn brainstorming, hypothetical possibilities, general wishes, or unresolved questions into tasks unless someone clearly requests or adopts a concrete follow-up.
 - Use a short action title and a complete description of its stated scope and expected outcome.
 - Set ownerDisplayName only when an owner is explicitly named; otherwise use null.
 - Set dueDate only when a deadline is explicitly stated. Use YYYY-MM-DD for an unambiguous calendar date; otherwise preserve the exact stated time phrase. Use null when absent.

@@ -26,8 +26,7 @@ from app.prompts.openai_meeting_summary import (
 log = logging.getLogger(__name__)
 
 API = "https://api.openai.com/v1/responses"
-MAX_TRANSCRIPT_CHARS = 60_000
-MAX_OUTPUT_TOKENS = 2_400
+MAX_OUTPUT_TOKENS = 10_000
 MEETING_SUMMARY_FORMAT = {
     "type": "json_schema",
     "name": "meeting_summary",
@@ -38,6 +37,14 @@ _request_lock = asyncio.Lock()
 _next_request_at = 0.0
 
 
+class OpenAIProviderError(ValueError):
+    """A safe, classified OpenAI failure suitable for logs and API responses."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
 class OpenAI:
     """Generate a meeting insight through the OpenAI Responses API."""
 
@@ -45,16 +52,16 @@ class OpenAI:
         self.config = config
 
     async def summarize(self, key: str, subject: str, transcript_text: str) -> Insight:
-        text = transcript_text[:MAX_TRANSCRIPT_CHARS]
         payload = {
             "model": self.config.openai_model,
             "input": [
                 {"role": "system", "content": OPENAI_SYSTEM_PROMPT},
-                {"role": "user", "content": openai_user_prompt(subject, text)},
+                {"role": "user", "content": openai_user_prompt(subject, transcript_text)},
             ],
             "max_output_tokens": MAX_OUTPUT_TOKENS,
-            # Give the Enterprise path room for Copilot-like thematic detail;
-            # the schema still bounds the shape and the prompt prevents filler.
+            # Give the Enterprise path enough room for detailed notes and a
+            # complete action register; the schema and prompt still prevent
+            # unsupported filler.
             "text": {"format": MEETING_SUMMARY_FORMAT, "verbosity": "high"},
             "reasoning": {"effort": "medium"},
             # Store the response as requested so it can be inspected in the
@@ -63,19 +70,88 @@ class OpenAI:
             "store": True,
         }
         response = await self.request(**payload)
+        content = response_text(response)
+        status = response.get("status")
+        incomplete = response.get("incomplete_details") or {}
+        incomplete_reason = incomplete.get("reason")
+        if status == "incomplete":
+            code = (
+                "OPENAI_RESPONSE_INCOMPLETE_MAX_OUTPUT_TOKENS"
+                if incomplete_reason == "max_output_tokens"
+                else "OPENAI_RESPONSE_CONTENT_FILTERED"
+                if incomplete_reason == "content_filter"
+                else "OPENAI_RESPONSE_INCOMPLETE"
+            )
+            self._log_unusable_response(response, content, code, incomplete_reason)
+            raise OpenAIProviderError(code, "OpenAI returned an incomplete response.")
+        if _has_refusal(response):
+            code = "OPENAI_RESPONSE_REFUSED"
+            self._log_unusable_response(response, content, code)
+            raise OpenAIProviderError(code, "OpenAI declined to summarize this transcript.")
+        if status not in {None, "completed"}:
+            code = "OPENAI_RESPONSE_FAILED"
+            self._log_unusable_response(response, content, code)
+            raise OpenAIProviderError(code, "OpenAI did not complete the response.")
+        if not content:
+            code = "OPENAI_RESPONSE_EMPTY"
+            self._log_unusable_response(response, content, code)
+            raise OpenAIProviderError(code, "OpenAI returned an empty response.")
         try:
-            content = response_text(response)
             data = json.loads(content)
+        except (TypeError, json.JSONDecodeError) as error:
+            code = "OPENAI_RESPONSE_INVALID_JSON"
+            self._log_unusable_response(
+                response,
+                content,
+                code,
+                json_line=getattr(error, "lineno", None),
+                json_column=getattr(error, "colno", None),
+            )
+            raise OpenAIProviderError(code, "OpenAI returned incomplete or invalid JSON.") from error
+        try:
             return Insight.model_validate({**data, "id": f"openai:{key}"})
         except (TypeError, ValueError, ValidationError) as error:
+            code = "OPENAI_RESPONSE_SCHEMA_INVALID"
             log.warning(
-                "OpenAI response parsing failed model=%s response_keys=%s error_type=%s",
+                "OpenAI response validation failed error_code=%s model=%s error_type=%s",
+                code,
                 self.config.openai_model,
-                sorted(response.keys()),
                 type(error).__name__,
                 exc_info=True,
             )
-            raise ValueError("OpenAI did not return a usable summary.") from error
+            self._log_unusable_response(response, content, code)
+            raise OpenAIProviderError(code, "OpenAI returned an invalid summary structure.") from error
+
+    def _log_unusable_response(
+        self,
+        response: dict,
+        content: str,
+        code: str,
+        incomplete_reason: str | None = None,
+        *,
+        json_line: int | None = None,
+        json_column: int | None = None,
+    ) -> None:
+        """Record actionable metadata without logging response or transcript text."""
+        usage = response.get("usage") or {}
+        output_details = usage.get("output_tokens_details") or {}
+        log.warning(
+            "OpenAI response unusable error_code=%s model=%s response_status=%s "
+            "incomplete_reason=%s response_id=%s output_chars=%s max_output_tokens=%s "
+            "input_tokens=%s output_tokens=%s reasoning_tokens=%s json_line=%s json_column=%s",
+            code,
+            self.config.openai_model,
+            response.get("status") or "unknown",
+            incomplete_reason or "-",
+            response.get("id") or "-",
+            len(content),
+            response.get("max_output_tokens") or MAX_OUTPUT_TOKENS,
+            usage.get("input_tokens", "-"),
+            usage.get("output_tokens", "-"),
+            output_details.get("reasoning_tokens", "-"),
+            json_line or "-",
+            json_column or "-",
+        )
 
     async def request(self, **payload: object) -> dict:
         global _next_request_at
@@ -110,26 +186,39 @@ class OpenAI:
                 return response.json()
             except httpx.HTTPStatusError as error:
                 log.warning(
-                    "OpenAI request rejected model=%s diagnostic=%s",
+                    "OpenAI request rejected error_code=%s model=%s diagnostic=%s",
+                    "OPENAI_HTTP_AUTH_REJECTED"
+                    if error.response.status_code in {401, 403}
+                    else "OPENAI_HTTP_RATE_LIMITED"
+                    if error.response.status_code == 429
+                    else "OPENAI_HTTP_UPSTREAM_ERROR",
                     model,
                     response_diagnostics(error.response),
                     exc_info=True,
                 )
                 if error.response.status_code in {401, 403}:
-                    raise ValueError("OpenAI rejected this API key.") from None
-                if error.response.status_code == 429:
-                    raise ValueError(
-                        "OpenAI is rate-limited; the next request is delayed."
+                    raise OpenAIProviderError(
+                        "OPENAI_HTTP_AUTH_REJECTED", "OpenAI rejected this API key."
                     ) from None
-                raise ValueError("OpenAI could not complete this request.") from None
+                if error.response.status_code == 429:
+                    raise OpenAIProviderError(
+                        "OPENAI_HTTP_RATE_LIMITED",
+                        "OpenAI is rate-limited; the next request is delayed.",
+                    ) from None
+                raise OpenAIProviderError(
+                    "OPENAI_HTTP_UPSTREAM_ERROR", "OpenAI could not complete this request."
+                ) from None
             except httpx.HTTPError as error:
                 log.warning(
-                    "OpenAI transport failure model=%s error_type=%s",
+                    "OpenAI transport failure error_code=OPENAI_TRANSPORT_ERROR "
+                    "model=%s error_type=%s",
                     model,
                     type(error).__name__,
                     exc_info=True,
                 )
-                raise ValueError("Unable to reach OpenAI.") from None
+                raise OpenAIProviderError(
+                    "OPENAI_TRANSPORT_ERROR", "Unable to reach OpenAI."
+                ) from None
 
 
 def response_text(response: dict) -> str:
@@ -142,4 +231,13 @@ def response_text(response: dict) -> str:
         if item.get("type") == "message"
         for part in item.get("content", [])
         if part.get("type") == "output_text" and isinstance(part.get("text"), str)
+    )
+
+
+def _has_refusal(response: dict) -> bool:
+    return any(
+        part.get("type") == "refusal"
+        for item in response.get("output", [])
+        if item.get("type") == "message"
+        for part in item.get("content", [])
     )

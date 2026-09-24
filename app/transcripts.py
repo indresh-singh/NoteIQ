@@ -15,7 +15,7 @@ from app.adaptive_cards import build_card
 from app.config import settings
 from app.graph_client import GraphClient, retryable
 from app.models import MeetingSync, TranscriptEvent, age_seconds
-from app.openai import OpenAI
+from app.openai import OpenAI, OpenAIProviderError
 from app.openrouter import OpenRouter
 from app.store import Store, digest
 
@@ -97,6 +97,7 @@ async def summarize_with_ai(
     subject: str,
     text: str,
     provider: str | None = None,
+    raise_on_failure: bool = False,
 ) -> bool:
     """Generate an insight with one explicitly selected external provider."""
     config = settings()
@@ -107,13 +108,16 @@ async def summarize_with_ai(
         return False
     try:
         insight = await OpenAI(config).summarize(event.meeting_id, subject, text)
-    except ValueError as error:
+    except OpenAIProviderError as error:
         log.warning(
-            "OpenAI summary user=%s meeting=%s failed reason=%s",
+            "OpenAI summary failed error_code=%s user=%s meeting=%s reason=%s",
+            error.code,
             user_id,
             event.meeting_id,
             error,
         )
+        if raise_on_failure:
+            raise
         return False
     card = build_card(insight, subject, source=f"OpenAI ({config.openai_model})")
     if card is None:

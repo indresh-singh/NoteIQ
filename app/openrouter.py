@@ -57,6 +57,22 @@ def extract_json_object(content: str) -> dict:
     return json.loads(match.group())
 
 
+def normalize_null_strings(value):
+    """Repair nullable schema fields returned as the literal string ``"null"``.
+
+    Some routed models satisfy the JSON object shape but serialize a missing
+    value as a string. Normalize recursively before Pydantic validation so the
+    bad sentinel is never saved or rendered as user-facing content.
+    """
+    if isinstance(value, list):
+        return [normalize_null_strings(item) for item in value]
+    if isinstance(value, dict):
+        return {key: normalize_null_strings(item) for key, item in value.items()}
+    if isinstance(value, str) and value.strip().lower() == "null":
+        return None
+    return value
+
+
 class OpenRouter:
     def __init__(self, config: Settings):
         self.config = config
@@ -126,7 +142,7 @@ class OpenRouter:
                 or message.get("reasoning_content")
                 or ""
             )
-            data = extract_json_object(content)
+            data = normalize_null_strings(extract_json_object(content))
         except (KeyError, IndexError, TypeError, ValueError) as error:
             log.exception(
                 "OpenRouter response parsing failed model=%s duration_ms=%d "

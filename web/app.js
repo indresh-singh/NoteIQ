@@ -171,10 +171,17 @@ function createDestinationSelect(items, valueField, labelField, className, acces
   return select;
 }
 
+function optionalText(value) {
+  if (typeof value !== "string" || value.trim().toLowerCase() === "null") return "";
+  return value;
+}
+
 function renderNote(note, hideTitle) {
   const line = element("span");
-  if (note.title && !hideTitle) line.append(element("strong", note.title + ": "));
-  line.append(document.createTextNode(note.text || ""));
+  const title = optionalText(note.title);
+  const text = optionalText(note.text);
+  if (title && !hideTitle) line.append(element("strong", title + ": "));
+  line.append(document.createTextNode(text));
   if (!note.subpoints?.length) {
     const paragraph = element("p");
     paragraph.append(line);
@@ -190,7 +197,7 @@ function renderNote(note, hideTitle) {
 function renderCollapsibleNote(note) {
   const wrapper = element("details", "", "note-collapsible");
   const summary = element("summary");
-  summary.append(element("strong", note.title || note.text || "Note"));
+  summary.append(element("strong", optionalText(note.title) || optionalText(note.text) || "Note"));
   wrapper.append(summary, renderNote(note, true));
   return wrapper;
 }
