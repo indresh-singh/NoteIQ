@@ -9,7 +9,7 @@ from urllib.parse import quote
 import httpx
 
 from app.graph_client import retryable
-from app.meetings import meeting_filter
+from app.meetings import meeting_filter, meeting_participants
 from app.models import InsightEvent, MeetingSync, TranscriptEvent, UserSync, age_seconds
 from app.store import (
     PUBLICATION_WINDOW_HOURS,
@@ -368,6 +368,7 @@ def _meeting_metadata(meeting: dict) -> dict:
         "start_date_time": meeting.get("startDateTime"),
         "end_date_time": meeting.get("endDateTime"),
         "expiration_date_time": meeting.get("expirationDateTime"),
+        "participants": meeting_participants(meeting),
     }
 
 

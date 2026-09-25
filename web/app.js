@@ -256,36 +256,139 @@ function renderActions(items, numbered) {
   return list;
 }
 
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"})[c]);
+}
+
+function emailDate(value, withTime) {
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value || "");
+  const date = new Date(dateOnly ? `${value}T00:00:00` : value);
+  if (!value || Number.isNaN(date.getTime())) return value || "";
+  const options = {weekday: "long", day: "numeric", month: "long", year: "numeric"};
+  if (withTime && !dateOnly) Object.assign(options, {hour: "numeric", minute: "2-digit", hour12: true});
+  return date.toLocaleString("en-GB", options);
+}
+
+// Builds the draft as email-safe HTML (tables and inline styles only, so it
+// survives Outlook's Word renderer) plus a plain-text fallback for mailto.
 function meetingEmail(meeting, segments) {
-  const lines = [meeting.subject || "Meeting"];
-  const when = meeting.content.started_at || meeting.content.meeting_metadata?.start_date_time;
-  if (when) lines.push(`Date: ${when}`);
+  const title = meeting.subject || "Meeting";
+  const when = emailDate(meeting.content.started_at || meeting.content.meeting_metadata?.start_date_time, true);
+  const provider = segments[0]?.insight?.provider;
+  const participants = (meeting.content.meeting_metadata?.participants || []).filter((person) => person.name || person.email);
+  const participantNames = participants.map((person) => person.name || person.email).join(", ");
+  // The organizer sends the minutes, so only attendees go on the To line.
+  const to = [...new Set(participants.filter((person) => !person.organizer && person.email).map((person) => person.email))];
+  const numbered = provider === "openai";
+  const sections = [["Meeting Summary", "meetingNotes"], ["Action Items", "actionItems"]].map(([heading, field]) => ({
+    heading, field, items: segments.flatMap((segment) => segment.insight?.[field] || []),
+  }));
+  const font = "font-family:'Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif";
+
+  const noteHtml = (note) => {
+    const noteTitle = optionalText(note.title);
+    const text = optionalText(note.text);
+    const lead = noteTitle ? `<strong style="color:#242638">${escapeHtml(noteTitle)}${text ? ":" : ""}</strong> ` : "";
+    return lead + escapeHtml(text) + subpointsHtml(note.subpoints);
+  };
+  const subpointsHtml = (points) => points?.length
+    ? `<ul style="margin:6px 0 0;padding-left:20px;color:#4a4e63">${points
+        .map((point) => `<li style="margin:0 0 4px">${noteHtml(point)}</li>`).join("")}</ul>`
+    : "";
+  const pill = (label, value) =>
+    `<span style="display:inline-block;margin:8px 8px 0 0;padding:3px 10px;border-radius:12px;background:#ffffff;border:1px solid #dfe2f2;font-size:12px;color:#64697c">` +
+    `<span style="font-weight:600;color:#5056b8;letter-spacing:.4px">${label}</span>&nbsp; ${escapeHtml(value)}</span>`;
+  const actionHtml = (item, index) => {
+    const marker = numbered
+      ? `<span style="display:inline-block;min-width:22px;height:22px;line-height:22px;margin-right:8px;border-radius:11px;background:#5056b8;color:#ffffff;font-size:12px;font-weight:700;text-align:center">${index + 1}</span>`
+      : `<span style="color:#5056b8;font-weight:700;margin-right:6px">&#9744;</span>`;
+    const due = optionalText(item.dueDate);
+    return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;margin:0 0 10px">` +
+      `<tr><td style="padding:12px 16px;background:#f7f8fc;border:1px solid #e4e7f0;border-left:4px solid #5056b8;border-radius:8px;${font};font-size:14px;line-height:1.55;color:#242638">` +
+      `${marker}${noteHtml(item)}<div>${pill("OWNER", optionalText(item.ownerDisplayName) || "Not specified")}` +
+      `${due ? pill("DUE", emailDate(due)) : ""}</div></td></tr></table>`;
+  };
+  const sectionHtml = ({heading, field, items}) => {
+    const count = items.length ? ` <span style="font-size:12px;font-weight:600;color:#64697c">(${items.length})</span>` : "";
+    const body = !items.length
+      ? `<p style="margin:0;color:#64697c;font-style:italic">No items identified.</p>`
+      : field === "actionItems"
+        ? items.map(actionHtml).join("")
+        : `<ul style="margin:0;padding-left:20px">${items.map((item) => `<li style="margin:0 0 10px">${noteHtml(item)}</li>`).join("")}</ul>`;
+    return `<h2 style="margin:26px 0 12px;padding-bottom:8px;border-bottom:2px solid #eceefa;${font};font-size:17px;font-weight:700;color:#5056b8">${heading}${count}</h2>${body}`;
+  };
+  const html =
+    `<div style="${font};font-size:14px;line-height:1.6;color:#242638">` +
+    `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:680px;border-collapse:separate">` +
+    `<tr><td style="background:#5056b8;padding:22px 28px;border-radius:12px 12px 0 0;${font}">` +
+    `<div style="font-size:11px;font-weight:600;letter-spacing:1.6px;color:#d6d8ff">MINUTES OF MEETING</div>` +
+    `<div style="margin-top:4px;font-size:22px;font-weight:700;line-height:1.3;color:#ffffff">${escapeHtml(title)}</div>` +
+    (when ? `<div style="margin-top:6px;font-size:13px;color:#e4e5ff">${escapeHtml(when)}</div>` : "") +
+    `</td></tr><tr><td style="background:#ffffff;border:1px solid #e4e7f0;border-top:0;border-radius:0 0 12px 12px;padding:4px 28px 26px;${font};font-size:14px;line-height:1.6;color:#242638">` +
+    (participantNames
+      ? `<p style="margin:22px 0 0;padding:10px 14px;background:#f7f8fc;border-radius:8px;font-size:13px;color:#4a4e63">` +
+        `<span style="font-weight:600;color:#5056b8;letter-spacing:.4px">PARTICIPANTS</span>&nbsp; ${escapeHtml(participantNames)}</p>`
+      : "") +
+    sections.map(sectionHtml).join("") +
+    `<p style="margin:26px 0 0;padding-top:12px;border-top:1px solid #eceefa;font-size:12px;color:#8a8fa3"><a href="${escapeHtml(window.location.origin)}/" style="color:#0563c1;text-decoration:underline">Sent from NoteIQ</a></p>` +
+    `</td></tr></table></div>`;
+
   const noteLines = (note, depth = 0) => {
-    const indent = "  ".repeat(depth);
     const text = [optionalText(note.title), optionalText(note.text)].filter(Boolean).join(": ");
     return [
-      ...(text ? [`${indent}- ${text}`] : []),
+      ...(text ? [`${"    ".repeat(depth)}${depth ? "-" : "•"} ${text}`] : []),
       ...(note.subpoints || []).flatMap((point) => noteLines(point, depth + 1)),
     ];
   };
-  for (const [heading, field] of [["Meeting Summary", "meetingNotes"], ["Action Items", "actionItems"]]) {
-    lines.push("", heading, "");
-    const items = segments.flatMap((segment) => segment.insight?.[field] || []);
+  const lines = [`MINUTES OF MEETING - ${title.toUpperCase()}`, ...(when ? [when] : []),
+    ...(participantNames ? [`Participants: ${participantNames}`] : [])];
+  for (const {heading, field, items} of sections) {
+    lines.push("", heading.toUpperCase(), "─".repeat(heading.length), "");
     if (!items.length) lines.push("No items identified.");
     for (const [index, item] of items.entries()) {
       const formatted = noteLines(item);
-      if (field === "actionItems" && segments[0]?.insight?.provider === "openai" && formatted.length) {
-        formatted[0] = formatted[0].replace(/^- /, `${index + 1}. `);
-      }
+      if (field === "actionItems" && numbered && formatted.length) formatted[0] = formatted[0].replace(/^• /, `${index + 1}. `);
       lines.push(...formatted);
       if (field === "actionItems") {
-        lines.push(`  Owner: ${optionalText(item.ownerDisplayName) || "Not specified"}`);
-        if (optionalText(item.dueDate)) lines.push(`  Due: ${item.dueDate}`);
+        const due = optionalText(item.dueDate);
+        lines.push(`    Owner: ${optionalText(item.ownerDisplayName) || "Not specified"}${due ? `  |  Due: ${emailDate(due)}` : ""}`, "");
       }
     }
   }
-  const subject = `${meeting.subject || "Meeting"} - Summary and Action Items`.replace(/[\r\n]+/g, " ");
-  return `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(lines.join("\r\n"))}`;
+  while (lines.at(-1) === "") lines.pop();
+  lines.push("", "Sent from NoteIQ");
+  const subject = `Minutes of Meeting - ${title}`.replace(/[\r\n]+/g, " ");
+  return {subject, to, html, text: lines.join("\r\n")};
+}
+
+// Copies the draft as rich text so pasting keeps the formatting; mailto
+// bodies can only carry plain text.
+async function copyRichText(html, text) {
+  try {
+    if (inTeams && microsoftTeams.clipboard?.isSupported()) {
+      await microsoftTeams.clipboard.write(new Blob([html], {type: "text/html"}));
+      return true;
+    }
+  } catch { /* Fall through to the browser clipboard. */ }
+  try {
+    if (navigator.clipboard?.write && window.ClipboardItem) {
+      await navigator.clipboard.write([new ClipboardItem({
+        "text/html": new Blob([html], {type: "text/html"}),
+        "text/plain": new Blob([text], {type: "text/plain"}),
+      })]);
+      return true;
+    }
+  } catch { /* Clipboard API blocked (e.g. iframe policy); try the copy event. */ }
+  let copied = false;
+  const onCopy = (event) => {
+    event.clipboardData.setData("text/html", html);
+    event.clipboardData.setData("text/plain", text);
+    event.preventDefault();
+    copied = true;
+  };
+  document.addEventListener("copy", onCopy);
+  try { document.execCommand("copy"); } catch {} finally { document.removeEventListener("copy", onCopy); }
+  return copied;
 }
 
 const occurrenceOpen = new Map();
@@ -353,7 +456,7 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
     // Every insight segment carries its own provider tag; group them so the
     // toggle below can show exactly one provider's data at a time.
     const segments = meeting.content.insights || (meeting.content.insight ? [{insight: meeting.content.insight}] : []);
-    const providerOrder = ["copilot", "openai", "openrouter"];
+    const providerOrder = ["openai", "copilot", "openrouter"];
     const configuredProviders = new Set(summaryProviders || ["copilot", summaryProvider]);
     const providerOf = (segment) => providerOrder.includes(segment.insight?.provider)
       ? segment.insight.provider : "copilot";
@@ -363,7 +466,11 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
     const hasTranscript = (meeting.content.transcripts || []).length > 0;
     const showToggle = providerOrder.some((provider) => byProvider[provider].length) || hasTranscript;
     const providersWithContent = providerOrder.filter((provider) => byProvider[provider].length);
-    let selected = providersWithContent.length === 1 ? providersWithContent[0]
+    const openaiReady = configuredProviders.has("openai");
+    // ChatGPT opens first whenever it is configured, even before its summary
+    // exists, so the Regenerate prompt is the first thing the organizer sees.
+    let selected = !custom && (openaiReady || byProvider.openai.length) ? "openai"
+      : providersWithContent.length === 1 ? providersWithContent[0]
       : providersWithContent.includes(summaryProvider) ? summaryProvider
       : providersWithContent[0] || summaryProvider || "copilot";
     selected = occurrenceProvider.get(viewKey) || selected;
@@ -386,11 +493,16 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
         || metadata.end_date_time || transcript.endDateTime || transcript.createdDateTime;
       dateLine.textContent = when ? new Date(when).toLocaleString() : "";
       dateLine.hidden = !when;
+      const promptRegenerate = !has && hasTranscript && selected === "openai" && openaiReady && !custom;
       hintLine.textContent = has
         ? `${providerLabel(selected)} insights available`
+        : promptRegenerate
+        ? "Transcript ready. Summary and Action Items are not available yet. Click Regenerate to create them."
         : hasTranscript
         ? `Transcript ready. Waiting for ${providerLabel(selected)}'s summary and action items.`
         : "Waiting for the transcript.";
+      hintLine.classList.toggle("regenerate-prompt", promptRegenerate);
+      regenerateButton.classList.toggle("attention", promptRegenerate);
       footerLine.textContent = `Generated from ${providerLabel(selected)} meeting insights.`;
     }
 
@@ -577,8 +689,19 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
     const emailButton = element("button", "Emails", "send-button");
     emailButton.type = "button";
     emailButton.title = "Open an email draft with the meeting summary and action items";
-    emailButton.onclick = () => {
-      window.location.href = meetingEmail(meeting, byProvider[selected]);
+    emailButton.onclick = async () => {
+      const email = meetingEmail(meeting, byProvider[selected]);
+      const copied = await copyRichText(email.html, email.text);
+      const body = copied ? "" : `&body=${encodeURIComponent(email.text)}`;
+      const to = email.to.map((address) => encodeURIComponent(address).replace(/%40/g, "@")).join(",");
+      window.location.href = `mailto:${to}?subject=${encodeURIComponent(email.subject)}${body}`;
+      if (!copied) return;
+      emailButton.textContent = "Copied - paste into your email";
+      emailButton.title = "The formatted summary is on your clipboard. Paste it into the email body (Ctrl+V or Cmd+V).";
+      setTimeout(() => {
+        emailButton.textContent = "Emails";
+        emailButton.title = "Open an email draft with the meeting summary and action items";
+      }, 6000);
     };
     actionButtons.append(emailButton);
 

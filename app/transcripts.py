@@ -14,6 +14,7 @@ from app.activity import INSIGHTS_READY, queue_notification
 from app.adaptive_cards import build_card
 from app.config import settings
 from app.graph_client import GraphClient, retryable
+from app.meetings import meeting_participants
 from app.models import MeetingSync, TranscriptEvent, age_seconds
 from app.occurrences import (
     entries,
@@ -224,6 +225,7 @@ async def process_transcript(event: TranscriptEvent, graph: GraphClient, store: 
                     "meeting_type": meeting.get("meetingType"),
                     "start_date_time": meeting.get("startDateTime"),
                     "end_date_time": meeting.get("endDateTime"),
+                    "participants": meeting_participants(meeting),
                 },
                 "transcript": {
                     "id": event.transcript_id,
