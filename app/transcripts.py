@@ -15,7 +15,13 @@ from app.adaptive_cards import build_card
 from app.config import settings
 from app.graph_client import GraphClient, retryable
 from app.models import MeetingSync, TranscriptEvent, age_seconds
-from app.occurrences import requires_sessions, select_session, session_key, transcript_version
+from app.occurrences import (
+    entries,
+    requires_sessions,
+    select_session,
+    session_key,
+    transcript_version,
+)
 from app.openai import OpenAI, OpenAIProviderError
 from app.openrouter import OpenRouter
 from app.store import Store, digest
@@ -31,11 +37,9 @@ def meeting_transcript_text(store: Store, user_id: str, content: dict) -> str:
     lets OpenRouter summarise the meeting as a whole instead of producing one
     partial summary per segment.
     """
-    entries = content.get("transcripts") or (
-        [{"transcript": content["transcript"]}] if content.get("transcript") else []
-    )
     ordered = sorted(
-        entries, key=lambda e: (e.get("transcript") or {}).get("createdDateTime") or ""
+        entries(content, "transcript"),
+        key=lambda e: (e.get("transcript") or {}).get("createdDateTime") or "",
     )
     parts = []
     for entry in ordered:

@@ -23,6 +23,7 @@ OPENAI_MEETING_SUMMARY_SCHEMA = {
         # people use for follow-up and exports.
         "actionItems": {
             "type": "array",
+            "maxItems": 10,
             "items": {
                 "type": "object",
                 "additionalProperties": False,
@@ -73,7 +74,8 @@ Meeting-note structure:
 - Keep titles descriptive and compact; put evidence and nuance in text. Do not repeat a title verbatim in its text.
 
 Action items:
-- Capture every concrete follow-up supported by the transcript, including direct requests, assignments, agreed next steps, stated intentions, and commitments.
+- Return at most 10 action items. Prioritize the most important concrete follow-ups supported by the transcript, including direct requests, assignments, agreed next steps, stated intentions, and commitments.
+- Consolidate overlapping follow-ups without changing their scope or ownership. Keep additional material details in the meeting notes. Do not pad the list to 10 or put numbering in titles; the app numbers the list.
 - Treat wording such as "please do", "can you", "we need to", "I will", "let's", and "the team should" as an action when it identifies a specific outcome or next step.
 - A named owner is not required for inclusion. Keep ownerDisplayName null when the responsible person is not explicit.
 - Do not turn brainstorming, hypothetical possibilities, general wishes, or unresolved questions into tasks unless someone clearly requests or adopts a concrete follow-up.

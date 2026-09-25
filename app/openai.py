@@ -15,6 +15,7 @@ import httpx
 from pydantic import ValidationError
 
 from app.config import Settings
+from app.insight_limits import MAX_OPENAI_ACTION_ITEMS
 from app.models import Insight
 from app.observability import response_diagnostics
 from app.prompts.openai_meeting_summary import (
@@ -109,7 +110,9 @@ class OpenAI:
             )
             raise OpenAIProviderError(code, "OpenAI returned incomplete or invalid JSON.") from error
         try:
-            return Insight.model_validate({**data, "id": f"openai:{key}"})
+            insight = Insight.model_validate({**data, "id": f"openai:{key}"})
+            insight.actionItems = insight.actionItems[:MAX_OPENAI_ACTION_ITEMS]
+            return insight
         except (TypeError, ValueError, ValidationError) as error:
             code = "OPENAI_RESPONSE_SCHEMA_INVALID"
             log.warning(

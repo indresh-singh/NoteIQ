@@ -236,6 +236,26 @@ function providerLabel(provider) {
   return "Microsoft 365 Copilot";
 }
 
+function occurrenceLabel(subject, startedAt) {
+  const date = new Date(startedAt);
+  if (!startedAt || Number.isNaN(date.getTime())) return `${subject} - Date unavailable`;
+  const day = `${date.getDate()} ${date.toLocaleDateString("en-US", {month: "short"})}`;
+  const hour = date.getHours() % 12 || 12;
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  return `${subject} - ${day} ${hour}.${minute} ${date.getHours() < 12 ? "AM" : "PM"}`;
+}
+
+function renderActions(items, numbered) {
+  const list = element(numbered ? "ol" : "div", "", "insight-actions");
+  for (const item of items) {
+    const row = element(numbered ? "li" : "div");
+    row.append(renderNote(item), element("p", `Owner: ${optionalText(item.ownerDisplayName) || "Not specified"}`, "hint"));
+    if (optionalText(item.dueDate)) row.append(element("p", `Due: ${item.dueDate}`, "hint"));
+    list.append(row);
+  }
+  return list;
+}
+
 function meetingEmail(meeting, segments) {
   const lines = [meeting.subject || "Meeting"];
   const when = meeting.content.started_at || meeting.content.meeting_metadata?.start_date_time;
@@ -252,8 +272,12 @@ function meetingEmail(meeting, segments) {
     lines.push("", heading, "");
     const items = segments.flatMap((segment) => segment.insight?.[field] || []);
     if (!items.length) lines.push("No items identified.");
-    for (const item of items) {
-      lines.push(...noteLines(item));
+    for (const [index, item] of items.entries()) {
+      const formatted = noteLines(item);
+      if (field === "actionItems" && segments[0]?.insight?.provider === "openai" && formatted.length) {
+        formatted[0] = formatted[0].replace(/^- /, `${index + 1}. `);
+      }
+      lines.push(...formatted);
       if (field === "actionItems") {
         lines.push(`  Owner: ${optionalText(item.ownerDisplayName) || "Not specified"}`);
         if (optionalText(item.dueDate)) lines.push(`  Due: ${item.dueDate}`);
@@ -292,12 +316,12 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
     if (grouped) {
       parent = element("article", "", "meeting meeting-series");
       parent.append(element("p", umbrella.content.meeting_metadata?.meeting_type === "recurring"
-        ? "RECURRING MEETING" : "MEETING SESSIONS", "eyebrow"), element("h2", umbrella.subject));
+        ? "RECURRING MEETING" : "MEETING CALLS", "eyebrow"), element("h2", umbrella.subject));
       parent.append(element("p", `${occurrences.length} sessions · Latest first`, "hint"));
       target.append(parent);
     }
     if (occurrences && umbrella.content.unassigned_insights) {
-      parent.append(element("p", "Earlier insights could not be assigned to a session. Refresh to recover session details, then regenerate the session you need.", "hint"));
+      parent.append(element("p", "Some older summaries cover the whole meeting or series and cannot be matched to the entries below. Select an entry and use Regenerate for ChatGPT Enterprise or OpenRouter. Copilot results appear when Microsoft provides matching transcript details.", "hint"));
     }
     if (occurrences && !occurrences.length) {
       parent.append(element("p", "Waiting for transcripts to identify this meeting's sessions.", "hint"));
@@ -315,13 +339,15 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
       const details = element("details", "", "meeting-occurrence");
       details.open = occurrenceOpen.get(viewKey) ?? sessionIndex === 0;
       details.ontoggle = () => occurrenceOpen.set(viewKey, details.open);
-      details.append(element("summary", meeting.content.started_at
-        ? new Date(meeting.content.started_at).toLocaleString() : "Session date unavailable"));
+      details.append(element("summary", occurrenceLabel(meeting.subject, meeting.content.started_at)));
       parent.append(details);
       destination = details;
     }
     const article = element("article", "", "meeting");
     if (!grouped) article.append(element("p", custom ? "CUSTOM TRANSCRIPT" : "MEETING FOLLOW-UP", "eyebrow"), element("h2", meeting.subject));
+    if (!grouped && !custom && meeting.content.transcripts?.length > 1) {
+      article.append(element("p", `${meeting.content.transcripts.length} transcript parts combined for this meeting`, "hint"));
+    }
     if (meeting.content.metadata_pending) article.append(element("p", "Session details unavailable; this transcript is kept separately.", "hint"));
 
     // Every insight segment carries its own provider tag; group them so the
@@ -441,23 +467,28 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
         activeContentButton = button;
         buttons.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b === button)));
         content.replaceChildren();
+        if (heading === "ACTION ITEMS") {
+          const items = byProvider[selected].flatMap((segment) => segment.insight?.actionItems || []);
+          if (items.length) {
+            content.append(element("h3", "Follow-up tasks"), renderActions(items, selected === "openai"));
+          } else {
+            content.append(element("p", byProvider[selected].length ? `No action items were included in the ${providerLabel(selected)} insights.` : `${providerLabel(selected)} insights aren't available yet.`));
+          }
+          return;
+        }
         let headingShown = false;
         for (const segment of byProvider[selected]) {
           const insight = segment.insight;
-          const items = heading === "KEY NOTES" ? insight?.meetingNotes : insight?.actionItems;
+          const items = insight?.meetingNotes;
           if (items?.length) {
             // One heading for the section, not one per stored insight: a meeting
             // transcribed in two parts has two insights and still has one set of notes.
             if (!headingShown) {
-              content.append(element("h3", heading === "KEY NOTES" ? "Meeting notes" : "Follow-up tasks"));
+              content.append(element("h3", "Meeting notes"));
               headingShown = true;
             }
             for (const item of items) {
-              content.append(heading === "KEY NOTES" ? renderCollapsibleNote(item) : renderNote(item));
-              if (heading === "ACTION ITEMS") {
-                content.append(element("p", item.ownerDisplayName || "Owner not specified", "hint"));
-                if (item.dueDate) content.append(element("p", `Due: ${item.dueDate}`, "hint"));
-              }
+              content.append(renderCollapsibleNote(item));
             }
           }
         }
@@ -576,13 +607,8 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
         section.append(element("summary", label));
         const items = byProvider[selected].flatMap((segment) => segment.insight?.[field] || []);
         if (!items.length) section.append(element("p", "No items identified."));
-        for (const item of items) {
-          section.append(renderNote(item));
-          if (field === "actionItems") {
-            section.append(element("p", `Responsible: ${item.ownerDisplayName || "Not specified"}`, "hint"));
-            if (item.dueDate) section.append(element("p", `Due: ${item.dueDate}`, "hint"));
-          }
-        }
+        if (field === "actionItems") section.append(renderActions(items, selected === "openai"));
+        else for (const item of items) section.append(renderNote(item));
         article.append(section);
       }
       const exportActions = element("div", "", "buttons action-buttons");

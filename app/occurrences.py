@@ -8,12 +8,39 @@ import hashlib
 import json
 from datetime import datetime, timezone
 
+from app.insight_limits import limit_openai_actions
+
 
 def entries(content: dict, kind: str) -> list[dict]:
-    return content.get(kind + "s") or ([{kind: content[kind]}] if content.get(kind) else [])
+    values = content.get(kind + "s") or ([{kind: content[kind]}] if content.get(kind) else [])
+    if kind != "transcript":
+        return values
+    # Historical list/detail aliases can share a recording correlation and
+    # timestamp despite different IDs. Feed and display that transcript once.
+    kept, index = [], {}
+    for entry in values:
+        transcript = entry["transcript"]
+        correlation, created = (
+            transcript.get("contentCorrelationId"),
+            transcript.get("createdDateTime"),
+        )
+        key = (correlation, created) if correlation and created else None
+        if key is not None and key in index:
+            at = index[key]
+            kept[at] = {
+                "transcript": {
+                    **kept[at]["transcript"],
+                    **{k: v for k, v in transcript.items() if v is not None},
+                }
+            }
+        else:
+            if key is not None:
+                index[key] = len(kept)
+            kept.append(entry)
+    return kept
 
 
-def session_key(transcript: dict) -> str:
+def session_key(transcript: dict, content: dict | None = None) -> str:
     if transcript.get("callId"):
         return "call:" + transcript["callId"]
     # No day/time clustering: missing metadata must never combine separate calls.
@@ -38,9 +65,10 @@ def timestamp(value) -> float:
 def sessions(content: dict) -> list[dict]:
     groups: dict[str, dict] = {}
     correlations: dict[str, set[str]] = {}
-    for entry in entries(content, "transcript"):
+    transcripts = entries(content, "transcript")
+    for entry in transcripts:
         transcript = entry["transcript"]
-        key = session_key(transcript)
+        key = session_key(transcript, content)
         group = groups.setdefault(key, {"id": key, "transcripts": [], "insights": []})
         group["transcripts"].append(entry)
         correlation = transcript.get("contentCorrelationId")
@@ -49,6 +77,14 @@ def sessions(content: dict) -> list[dict]:
     for entry in entries(content, "insight"):
         insight = entry["insight"]
         key = insight.get("occurrence_id")
+        # A legacy whole-meeting summary is safe when Graph proves every
+        # transcript belongs to one actual call. Invite type is irrelevant:
+        # scheduled and recurring links can both be joined more than once.
+        one_known_call = len(groups) == 1 and all(
+            e["transcript"].get("callId") for e in transcripts
+        )
+        if one_known_call and not key:
+            key = next(iter(groups))
         if not key and (insight.get("provider") or "copilot") == "copilot":
             matches = correlations.get(insight.get("contentCorrelationId"), set())
             if len(matches) == 1:
@@ -67,7 +103,25 @@ def sessions(content: dict) -> list[dict]:
             if timestamp(entry["transcript"].get("createdDateTime"))
         ]
         group["started_at"] = dates[0] if dates else None
-        group["metadata_pending"] = not group["id"].startswith("call:")
+        group["metadata_pending"] = group["id"].startswith("transcript:")
+
+        # A regenerated whole-meeting summary supersedes its legacy equivalent.
+        def rank(entry):
+            key = entry["insight"].get("occurrence_id")
+            return 2 if key == group["id"] else 1 if key else 0
+
+        best_rank = {
+            provider: max(
+                (rank(e) for e in group["insights"] if e["insight"].get("provider") == provider),
+                default=0,
+            )
+            for provider in ("openai", "openrouter")
+        }
+        group["insights"] = [
+            e
+            for e in group["insights"]
+            if rank(e) >= best_rank.get(e["insight"].get("provider"), 0)
+        ]
     return sorted(groups.values(), key=lambda group: timestamp(group["started_at"]), reverse=True)
 
 
@@ -84,7 +138,7 @@ def requires_sessions(content: dict) -> bool:
 def select_session(content: dict, occurrence_id: str | None) -> dict:
     """Validate a client selection against this user's already authorized record."""
     if occurrence_id is None and not requires_sessions(content):
-        return content
+        return limit_openai_actions({**content, "transcripts": entries(content, "transcript")})
     if occurrence_id is None:
         raise ValueError("Select a meeting session first.")
     group = next((g for g in sessions(content) if g["id"] == occurrence_id), None)
@@ -101,20 +155,40 @@ def select_session(content: dict, occurrence_id: str | None) -> dict:
         occurrence_id=occurrence_id,
         started_at=group["started_at"],
     )
-    return selected
+    return limit_openai_actions(selected)
 
 
 def present_meeting(meeting: dict) -> dict:
     content = meeting["content"]
     if not requires_sessions(content):
-        return meeting
+        return {
+            **meeting,
+            "content": limit_openai_actions(
+                {**content, "transcripts": entries(content, "transcript")}
+            ),
+        }
     groups = sessions(content)
-    assigned = sum(len(group["insights"]) for group in groups)
+    assigned_ids = {id(e["insight"]) for group in groups for e in group["insights"]}
+    # Old AI summaries remain stored for history, but stop warning after every
+    # current session has a replacement from that provider.
+    replaced_providers = {
+        provider
+        for provider in ("openai", "openrouter")
+        if groups
+        and all(
+            any(e["insight"].get("provider") == provider for e in g["insights"]) for g in groups
+        )
+    }
+    unassigned = sum(
+        id(e["insight"]) not in assigned_ids
+        and e["insight"].get("provider") not in replaced_providers
+        for e in entries(content, "insight")
+    )
     return {
         **meeting,
         "content": {
             **content,
-            "occurrences": groups,
-            "unassigned_insights": len(entries(content, "insight")) - assigned,
+            "occurrences": [limit_openai_actions(group) for group in groups],
+            "unassigned_insights": unassigned,
         },
     }

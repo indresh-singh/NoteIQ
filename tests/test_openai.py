@@ -95,6 +95,28 @@ async def test_openai_parses_the_rest_api_output_array(monkeypatch):
     assert insight.id == "openai:meeting-1"
 
 
+async def test_openai_limits_generated_actions_to_ten(monkeypatch):
+    enable_openai(monkeypatch)
+    mock_client(
+        monkeypatch,
+        lambda request: httpx.Response(
+            200,
+            json={
+                "output_text": json.dumps(
+                    {
+                        "meetingNotes": [],
+                        "actionItems": [{"text": f"Task {number}"} for number in range(12)],
+                    }
+                ),
+            },
+        ),
+    )
+    insight = await OpenAI(settings()).summarize("meeting-1", "Planning", "Transcript")
+    assert len(insight.actionItems) == 10
+    assert insight.actionItems[-1].text == "Task 9"
+    assert MEETING_SUMMARY_FORMAT["schema"]["properties"]["actionItems"]["maxItems"] == 10
+
+
 async def test_openai_classifies_and_logs_an_incomplete_response(monkeypatch, caplog):
     enable_openai(monkeypatch)
     mock_client(
@@ -132,9 +154,7 @@ async def test_openai_classifies_and_logs_an_incomplete_response(monkeypatch, ca
         (
             {
                 "status": "completed",
-                "output": [
-                    {"type": "message", "content": [{"type": "refusal", "refusal": "No"}]}
-                ],
+                "output": [{"type": "message", "content": [{"type": "refusal", "refusal": "No"}]}],
             },
             "OPENAI_RESPONSE_REFUSED",
         ),

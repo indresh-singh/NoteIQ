@@ -32,3 +32,30 @@ def test_package_uses_public_tab_and_contains_no_bot_or_secrets(config, tmp_path
         assert config.graph_secret.get_secret_value() not in content
         for name, size in (("color.png", 192), ("outline.png", 32)):
             assert struct.unpack(">II", archive.read(name)[16:24]) == (size, size)
+
+
+def test_package_supports_custom_branding(config, tmp_path, monkeypatch):
+    package = tmp_path / "dummy-noteiq.zip"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "package_teams",
+            "--app-name",
+            "DummyNoteIQ",
+            "--icon-text",
+            "DN",
+            "--output",
+            str(package),
+        ],
+    )
+    main()
+
+    with ZipFile(package) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        assert manifest["name"] == {
+            "short": "DummyNoteIQ",
+            "full": "DummyNoteIQ by Technology Innovation Institute",
+        }
+        assert "DummyNoteIQ" in manifest["description"]["full"]
+        assert "NoteIQ" not in manifest["description"]["full"].replace("DummyNoteIQ", "")
+        assert archive.read("color.png") != archive.read("outline.png")

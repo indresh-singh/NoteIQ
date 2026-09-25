@@ -6,7 +6,7 @@ from app.config import settings
 from app.models import Insight, MeetingSync, TranscriptEvent
 from app.occurrences import present_meeting, select_session, sessions, transcript_version
 from app.sync import sync_meeting
-from app.transcripts import process_transcript
+from app.transcripts import meeting_transcript_text, process_transcript
 from tests.conftest import USER
 
 
@@ -101,6 +101,129 @@ def test_missing_call_ids_are_never_grouped_by_date(store):
         select_session(content, None)
     with pytest.raises(KeyError):
         select_session(content, "call:someone-else")
+
+
+def test_same_call_restarted_transcripts_restore_whole_call_insights(store):
+    row = seed(store, "actual-call", "first", 24, "Before transcription paused")
+    seed(store, "actual-call", "second", 24, "After transcription resumed")
+    store.save_meeting(
+        USER,
+        "Catchup",
+        {
+            "meeting_id": "series",
+            "meeting_metadata": {"meeting_type": "scheduled"},
+            "insight": {
+                "id": "legacy",
+                "provider": "openai",
+                "meetingNotes": [{"text": "Whole meeting"}],
+            },
+        },
+    )
+    presented = present_meeting(store.meeting(USER, row))["content"]
+    assert len(presented["occurrences"]) == 1
+    assert presented["unassigned_insights"] == 0
+    assert not presented["occurrences"][0]["metadata_pending"]
+    selected = select_session(store.find_meeting(USER, "series"), "call:actual-call")
+    assert meeting_transcript_text(store, USER, selected) == (
+        "Before transcription paused\n\nAfter transcription resumed"
+    )
+    assert selected["insights"][0]["insight"]["id"] == "legacy"
+    store.save_meeting(
+        USER,
+        "Catchup",
+        {
+            "meeting_id": "series",
+            "insight": {
+                "id": "new",
+                "provider": "openai",
+                "occurrence_id": "call:actual-call",
+                "meetingNotes": [{"text": "New complete summary"}],
+            },
+        },
+    )
+    presented = present_meeting(store.meeting(USER, row))["content"]
+    assert presented["unassigned_insights"] == 0
+    assert [e["insight"]["id"] for e in presented["occurrences"][0]["insights"]] == ["new"]
+
+
+def test_duplicate_transcript_aliases_are_shown_and_fed_to_ai_once(store):
+    local_id = store.save_transcript(USER, "one-off", "a", "One transcript")
+    content = {
+        "meeting_id": "one-off",
+        "meeting_metadata": {"meeting_type": "scheduled"},
+        "transcripts": [
+            {
+                "transcript": {
+                    "id": alias,
+                    "local_id": local_id,
+                    "contentCorrelationId": "same-recording",
+                    "createdDateTime": "2026-09-23T20:48:28Z",
+                }
+            }
+            for alias in ("list-id", "detail-id")
+        ],
+        "insight": {"id": "legacy", "provider": "openai", "meetingNotes": [{"text": "Summary"}]},
+    }
+    presented = present_meeting({"content": content})["content"]
+    assert len(presented["transcripts"]) == 1
+    assert meeting_transcript_text(store, USER, content) == "One transcript"
+    assert presented["insights"][0]["insight"]["id"] == "legacy"
+    assert len(content["transcripts"]) == 2  # projection does not delete historical data
+
+
+def test_distinct_call_ids_are_not_combined_regardless_of_invite_type(store):
+    seed(store, "first-call", "a", 24)
+    seed(store, "second-call", "b", 24)
+    content = store.find_meeting(USER, "series")
+    content["meeting_metadata"]["meeting_type"] = "scheduled"
+    assert len(sessions(content)) == 2
+
+
+def test_known_single_call_summary_survives_non_recurring_grouping(store):
+    seed(store, "one-call", "a", 24)
+    seed(store, "one-call", "b", 24)
+    add_insight(store, "one-call")
+    content = store.find_meeting(USER, "series")
+    content["meeting_metadata"]["meeting_type"] = "scheduled"
+    groups = sessions(content)
+    assert groups[0]["id"] == "call:one-call"
+    assert len(groups[0]["insights"]) == 1
+
+
+@pytest.mark.parametrize("provider", ["openai", "openrouter"])
+async def test_same_call_transcript_restart_summarizes_both_parts(
+    monkeypatch, store, samples, provider
+):
+    monkeypatch.setenv(f"{provider.upper()}_API_KEY", "test")
+    if provider == "openrouter":
+        monkeypatch.setenv("OPENROUTER_MODEL", "test/model")
+    settings.cache_clear()
+    seed(store, "actual-call", "first", 24, "Before pause")
+    seen = []
+
+    class AI:
+        def __init__(self, config):
+            pass
+
+        async def summarize(self, key, subject, text):
+            seen.append((key, text))
+            return Insight(id=f"{provider}:{key}", meetingNotes=[{"text": "Combined"}])
+
+    monkeypatch.setattr(
+        "app.transcripts." + ("OpenAI" if provider == "openai" else "OpenRouter"), AI
+    )
+    graph = AsyncMock()
+    graph.request.side_effect = [
+        {**samples["meeting"], "meetingType": "scheduled"},
+        {"id": "second", "callId": "actual-call", "createdDateTime": "2026-09-24T12:10:00Z"},
+        "After resume",
+    ]
+    await process_transcript(
+        TranscriptEvent(user_id=USER, meeting_id="series", transcript_id="second"), graph, store
+    )
+    assert seen == [("series:call:actual-call", "Before pause\n\nAfter resume")]
+    group = sessions(store.find_meeting(USER, "series"))[0]
+    assert len(group["insights"]) == 1
 
 
 @pytest.mark.parametrize("provider", ["openai", "openrouter"])

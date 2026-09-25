@@ -10,12 +10,12 @@
     "termsOfUseUrl": "${PUBLIC_URL}/static/terms.html"
   },
   "name": {
-    "short": "NoteIQ",
-    "full": "NoteIQ by Technology Innovation Institute"
+    "short": "${APP_NAME}",
+    "full": "${APP_NAME} by Technology Innovation Institute"
   },
   "description": {
     "short": "TII's meeting transcripts, Copilot notes and action items.",
-    "full": "NoteIQ by Technology Innovation Institute (TII) connects to your Microsoft 365 work account to show transcripts, Copilot notes and action items for meetings you organize. NoteIQ notifies you in Teams Activity when transcripts and insights are available. Requires a Microsoft 365 Copilot license and administrator-approved meeting access."
+    "full": "${APP_NAME} by Technology Innovation Institute (TII) connects to your Microsoft 365 work account to show transcripts, Copilot notes and action items for meetings you organize. ${APP_NAME} notifies you in Teams Activity when transcripts and insights are available. Requires a Microsoft 365 Copilot license and administrator-approved meeting access."
   },
   "icons": {
     "color": "color.png",

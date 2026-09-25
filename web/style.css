@@ -3,6 +3,7 @@
 @media(max-width:650px){main{padding:22px 18px}.badge{display:none}.welcome{padding:40px 0}.welcome h1{font-size:39px}.toolbar{align-items:flex-start}.buttons{gap:7px}.toolbar button{padding:8px 10px}.meeting{padding:18px}.statusbar{flex-wrap:wrap}}
 
 .transcript-text { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.6; }
+ol.insight-actions{padding-left:28px}ol.insight-actions>li{padding-left:4px;margin-bottom:18px}ol.insight-actions>li::marker{font-weight:650;color:var(--accent)}
 
 .note-collapsible{padding:12px 0;border-bottom:1px solid var(--line)}
 .note-collapsible:last-child{border-bottom:none}

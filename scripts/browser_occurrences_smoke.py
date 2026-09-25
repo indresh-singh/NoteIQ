@@ -49,7 +49,9 @@ def main():
             sync_playwright() as playwright,
         ):
             browser = playwright.chromium.launch(args=["--host-resolver-rules=MAP * ~NOTFOUND"])
-            context = browser.new_context(viewport={"width": 1280, "height": 950})
+            context = browser.new_context(
+                viewport={"width": 1280, "height": 950}, timezone_id="Asia/Dubai"
+            )
             errors, exports = [], []
             recovery_status = 200
             router = make_router(client, errors)
@@ -138,15 +140,16 @@ def main():
             expect(sessions.nth(0)).to_have_attribute("open", "")
             assert sessions.nth(1).get_attribute("open") is None
             expect(sessions.nth(0).locator("summary").first).to_contain_text("24")
+            expect(sessions.nth(0).locator("summary").first).to_have_text(
+                "Daily Brief - 24 Sep 4.00 PM"
+            )
             expect(sessions.nth(1).locator("summary").first).to_contain_text("23")
             latest = sessions.nth(0)
             session_date = latest.locator("time").inner_text()
             for provider, label in (("copilot", "Copilot"), ("openrouter", "OpenRouter")):
                 latest.get_by_role("radio", name=label, exact=True).click()
                 expect(latest.locator("time")).to_have_text(session_date)
-                expect(latest.locator(".card-content")).to_contain_text(
-                    f"{provider} notes day 24"
-                )
+                expect(latest.locator(".card-content")).to_contain_text(f"{provider} notes day 24")
                 expect(latest.locator(".card-content")).not_to_contain_text("day 23")
             latest.get_by_role("radio", name="ChatGPT Enterprise", exact=True).click()
             expect(latest.locator("time")).to_have_text(session_date)
@@ -187,6 +190,48 @@ def main():
             expect(recovery).to_contain_text("Meeting not found")
             page.evaluate("refresh()")
             expect(recovery).to_contain_text("Meeting not found")
+
+            # A non-recurring invite with paused/restarted transcription is
+            # one card. Its older whole-meeting summary remains available.
+            for part in (1, 2):
+                local_id = store.save_transcript(USER, "restart", str(part), f"Part {part}")
+                store.save_meeting(
+                    USER,
+                    "10 AM Catchup - Automations",
+                    {
+                        "meeting_id": "restart",
+                        "meeting_metadata": {"meeting_type": "scheduled"},
+                        "transcript": {
+                            "id": str(part),
+                            "local_id": local_id,
+                            "callId": "restart-call",
+                            "contentCorrelationId": f"part-{part}",
+                            "createdDateTime": f"2026-10-10T06:{14 + part}:00Z",
+                        },
+                        "insight": {
+                            "id": "legacy-restart",
+                            "provider": "openai",
+                            "meetingNotes": [{"text": "Complete catchup summary"}],
+                            "actionItems": [{"text": f"Catchup action {i}"} for i in range(1, 13)],
+                        },
+                    },
+                )
+            page.evaluate("refresh()")
+            catchup = page.locator("#meetings > article").filter(
+                has=page.get_by_role("heading", name="10 AM Catchup - Automations", exact=True)
+            )
+            expect(catchup).to_contain_text("2 transcript parts combined for this meeting")
+            expect(catchup.locator(".meeting-occurrence")).to_have_count(0)
+            expect(catchup).not_to_contain_text("Some older summaries")
+            expect(catchup).to_contain_text("Complete catchup summary")
+            catchup.get_by_role("button", name="Action items", exact=True).click()
+            expect(catchup.locator("ol.insight-actions > li")).to_have_count(10)
+            expect(catchup.locator("ol.insight-actions > li").last).to_contain_text(
+                "Catchup action 10"
+            )
+            expect(catchup).not_to_contain_text("Catchup action 11")
+            catchup.get_by_role("button", name="Transcripts", exact=True).click()
+            expect(catchup.locator(".card-content details")).to_have_count(2)
             page.set_viewport_size({"width": 390, "height": 844})
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
             assert not errors, errors
@@ -195,8 +240,8 @@ def main():
             expect(recovery).to_have_text("")
             browser.close()
     print(
-        "Recurring sessions: provider dates, scoped content/exports, regeneration and durable "
-        "recovery outcomes passed."
+        "Meeting UI: recurring labels/dates, single-meeting transcript parts, ten numbered "
+        "ChatGPT actions, scoped exports, regeneration and recovery outcomes passed."
     )
 
 
