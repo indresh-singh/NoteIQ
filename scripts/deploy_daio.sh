@@ -68,7 +68,10 @@ az_tsv() {
   az "$@" --output tsv | tr -d '\r'
 }
 
-uv_command="$(resolve_command uv || true)"
+# WSL sessions launched from Windows do not always inherit the Windows PATH.
+# An explicit path (for example /mnt/c/Users/<user>/.local/bin/uv.exe) keeps
+# deployment usable in that configuration.
+uv_command="${NOTEIQ_UV_COMMAND:-$(resolve_command uv || true)}"
 docker_command="$(resolve_docker || true)"
 if [[ -z "$uv_command" ]]; then
   echo "Required command is unavailable: uv" >&2
@@ -123,14 +126,27 @@ for name in \
 done
 
 # python-dotenv parses quoted values without evaluating shell syntax. NUL
-# delimiters preserve spaces and other characters in secrets.
+# delimiters preserve spaces and other characters in secrets. Do not use
+# process substitution here: Bash does not propagate its command's failure,
+# which would otherwise surface later as a misleading "Missing ..." setting.
+env_values_file="$(mktemp)"
+trap 'rm -f "$env_values_file"' EXIT
+dotenv_env_file="$env_file"
+# When WSL invokes a Windows uv.exe, its Python process cannot open a POSIX
+# /mnt/c path. Convert only the dotenv path; other deployment commands still
+# receive their expected WSL paths.
+if [[ "$uv_command" == *.exe ]] && command -v wslpath >/dev/null 2>&1; then
+  dotenv_env_file="$(wslpath -w "$env_file")"
+fi
+if ! "$uv_command" run python -c \
+  'import sys; from dotenv import dotenv_values; values=dotenv_values(sys.argv[1], interpolate=False); [sys.stdout.buffer.write(k.encode()+b"\0"+(v or "").encode()+b"\0") for k,v in values.items()]' \
+  "$dotenv_env_file" > "$env_values_file"; then
+  echo "Failed to load environment file with uv: $env_file" >&2
+  exit 9
+fi
 while IFS= read -r -d '' name && IFS= read -r -d '' value; do
   export "$name=$value"
-done < <(
-  "$uv_command" run python -c \
-    'import os, sys; from dotenv import dotenv_values; values=dotenv_values(sys.argv[1], interpolate=False); [sys.stdout.buffer.write(k.encode()+b"\0"+(v or "").encode()+b"\0") for k,v in values.items()]' \
-    "$env_file"
-)
+done < "$env_values_file"
 
 if (( $# != 0 )); then
   echo "This deployment command does not accept tags; a unique tag is generated automatically." >&2
