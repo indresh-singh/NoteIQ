@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from app.activity import INSIGHTS_READY, queue_notification
 from app.adaptive_cards import build_card
 from app.graph_client import GraphClient, retryable
+from app.meetings import meeting_participants
 from app.models import Insight, InsightEvent, MeetingSync, age_seconds
 from app.store import Store, digest
 
@@ -49,6 +50,7 @@ async def process_insight(event: InsightEvent, graph: GraphClient, store: Store)
                             "meeting_type": meeting.get("meetingType"),
                             "start_date_time": meeting.get("startDateTime"),
                             "end_date_time": meeting.get("endDateTime"),
+                            "participants": meeting_participants(meeting),
                         },
                         "insight": {
                             **insight.model_dump(mode="json"),

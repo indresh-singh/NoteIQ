@@ -86,6 +86,7 @@ body.contrast .send-button:hover{background:#0f0;color:#000}
 .meeting-occurrence>.meeting{border:0;box-shadow:none;margin:0;padding:0 0 1rem}
 .regenerate-icon{display:inline-block}
 .regenerate-button.spinning .regenerate-icon{animation:noteiq-spin 1s linear infinite}
+.regenerate-button.attention{background:var(--accent);border-color:var(--accent);color:var(--paper)}.regenerate-button.attention:hover{color:var(--paper);filter:brightness(1.08)}.hint.regenerate-prompt{color:var(--accent);font-weight:600}
 @keyframes noteiq-spin{to{transform:rotate(360deg)}}
 
 .workspace-tabs{display:inline-flex;gap:2px;margin:22px 0 0;padding:3px;border:1px solid var(--line);border-radius:10px;background:var(--bg)}
