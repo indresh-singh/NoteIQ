@@ -44,6 +44,26 @@ def quiet_worker(monkeypatch):
 
 
 class TestJobsRunConcurrently:
+    async def test_worker_sweep_triggers_the_staged_session_repair(
+        self, store, graph, quiet_worker, monkeypatch
+    ):
+        calls = []
+
+        def repair(current):
+            calls.append(current)
+            return 0
+
+        monkeypatch.setattr("app.worker.queue_session_repairs", repair)
+        worker = asyncio.create_task(run_worker(store, graph, asyncio.Event()))
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+            if calls:
+                break
+        worker.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await worker
+        assert calls == [store]
+
     async def test_several_jobs_are_in_flight_at_once(
         self, store, graph, quiet_worker, monkeypatch
     ):

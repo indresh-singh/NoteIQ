@@ -48,8 +48,15 @@ def test_regenerate_replaces_openrouter_insight(monkeypatch, client, store, sign
 
     response = client.post(f"/api/meetings/{meeting_id}/regenerate", headers=signed_in, json={})
     assert response.status_code == 200
-    insights = response.json()["content"]["insights"]
+    result = response.json()
+    assert result.keys() == {"status", "meeting_id", "occurrence_id", "provider", "insights"}
+    assert result["status"] == "saved"
+    assert result["meeting_id"] == meeting_id
+    assert result["occurrence_id"] is None
+    assert result["provider"] == "openrouter"
+    insights = result["insights"]
     assert len(insights) == 1
+    assert insights[0].keys() == {"insight"}
     # Keyed by meeting, not transcript -- see test_transcripts.py.
     assert insights[0]["insight"]["id"] == "openrouter:m"
     assert insights[0]["insight"]["provider"] == "openrouter"
@@ -70,7 +77,7 @@ def test_regenerate_can_select_openrouter_when_openai_is_preferred(
         json={"provider": "openrouter"},
     )
     assert response.status_code == 200
-    assert response.json()["content"]["insights"][0]["insight"]["provider"] == "openrouter"
+    assert response.json()["insights"][0]["insight"]["provider"] == "openrouter"
 
 
 def test_regenerate_requires_an_external_summary_service(client, store, signed_in):
@@ -89,7 +96,7 @@ def test_regenerate_works_under_the_default_copilot_provider(monkeypatch, client
 
     response = client.post(f"/api/meetings/{meeting_id}/regenerate", headers=signed_in, json={})
     assert response.status_code == 200
-    assert response.json()["content"]["insights"][0]["insight"]["provider"] == "openrouter"
+    assert response.json()["insights"][0]["insight"]["provider"] == "openrouter"
 
 
 def test_regenerate_requires_a_transcript(monkeypatch, client, store, signed_in):

@@ -11,7 +11,7 @@ from app.models import MeetingSync, TranscriptEvent, UserSync, parse_event
 from app.observability import log_context
 from app.store import Store
 from app.subscriptions import renew_subscriptions
-from app.sync import discover_meetings, queue_sync, sync_meeting
+from app.sync import discover_meetings, queue_session_repairs, queue_sync, sync_meeting
 from app.transcripts import process_transcript
 
 log = logging.getLogger(__name__)
@@ -220,11 +220,14 @@ async def run_worker(store: Store, graph: GraphClient, repair: asyncio.Event):
                 queued = 0
                 for user_id in store.users():
                     queued += queue_sync(store, user_id, discover=True)
+                repairs = queue_session_repairs(store)
+                queued += repairs
                 # Queue depth trending up across a day is the saturation signal:
                 # it says the sweep is enqueueing faster than this worker drains.
                 log.info(
-                    "Sweep queued=%s pending=%s running=%s",
+                    "Sweep queued=%s session_repairs=%s pending=%s running=%s",
                     queued,
+                    repairs,
                     store.pending_job_count(),
                     len(running),
                 )

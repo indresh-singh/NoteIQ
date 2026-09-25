@@ -24,6 +24,7 @@ log = logging.getLogger(__name__)
 # How far back any sweep or manual refresh looks. Graph's own transcript
 # discovery is bounded to the same window.
 RECENT_SECONDS = 7 * 86400
+SESSION_REPAIR_BATCH = 5
 
 # Manual Refresh runs inline so a click brings results back in the same
 # request, which means its cost has to be bounded as meetings and users grow:
@@ -163,6 +164,18 @@ def queue_sync(store, user_id, *, discover=False, within_window=True):
         payloads.append(UserSync(user_id=user_id).model_dump_json())
     store.enqueue(payloads)
     return len(payloads)
+
+
+def queue_session_repairs(store, limit: int = SESSION_REPAIR_BATCH) -> int:
+    """Stage a bounded batch of historical session-metadata repairs."""
+    candidates = store.session_repair_candidates(limit)
+    store.enqueue(
+        [
+            MeetingSync(user_id=user_id, meeting_id=meeting_id).model_dump_json()
+            for user_id, meeting_id in candidates
+        ]
+    )
+    return len(candidates)
 
 
 async def discover_meetings(event, graph, store, found: dict | None = None):
@@ -499,7 +512,21 @@ async def recover_from_link(store, graph, user_id, meeting_url):
             meeting.get("subject") or "Teams meeting",
             {"meeting_id": meeting_id, "meeting_metadata": _meeting_metadata(meeting)},
         )
-    queued = queue_sync(store, user_id, within_window=False) if owned else 0
+    # Recovery is an explicit request to re-check the meetings resolved from
+    # this link. Queue those meetings directly instead of using the background
+    # sweep's "unsettled only" filter. A historical meeting can already be
+    # settled because every transcript has a Copilot insight while its saved
+    # transcript records still predate callId/session metadata. In that state,
+    # the filter made "Meeting found" a no-op and left transcription restarts
+    # displayed as separate calls forever.
+    owned = list(dict.fromkeys(owned))
+    store.enqueue(
+        [
+            MeetingSync(user_id=user_id, meeting_id=meeting_id).model_dump_json()
+            for meeting_id in owned
+        ]
+    )
+    queued = len(owned)
     result = {"found": len(meetings), "queued": queued}
     if skipped_not_organizer or skipped_unverified or skipped_access_denied:
         result.update(
@@ -615,28 +642,83 @@ async def sync_meeting(event, graph, store, found: dict | None = None):
     ]
     for kind, resource, model, field in kinds:
         try:
-            known = {item[kind]["id"] for item in saved.get(kind + "s", [])}
-            known.update(item[kind].get("source_id") for item in saved.get(kind + "s", []))
+            saved_items = bodies(saved, kind)
+            known = {item["id"] for item in saved_items}
+            known.update(item.get("source_id") for item in saved_items)
             items = await graph.list(resource)
             fresh = [item["id"] for item in items if item["id"] not in known]
             if kind == "transcript":
                 # Upgrade historical records once through the normal transcript
                 # pipeline. This recovers callId and regenerates isolated results.
+                missing_entries = [
+                    transcript
+                    for transcript in saved_items
+                    if transcript.get("session_metadata_checked") is not True
+                ]
                 missing_metadata = {
                     alias
-                    for entry in saved.get("transcripts", [])
-                    if not entry["transcript"].get("session_metadata_checked")
-                    for alias in (
-                        entry["transcript"].get("id"),
-                        entry["transcript"].get("source_id"),
-                    )
+                    for transcript in missing_entries
+                    for alias in (transcript.get("id"), transcript.get("source_id"))
                     if alias
                 }
-                fresh = list(
-                    dict.fromkeys(
-                        [*fresh, *(item["id"] for item in items if item["id"] in missing_metadata)]
+                missing_correlations = {
+                    transcript["contentCorrelationId"]
+                    for transcript in missing_entries
+                    if transcript.get("contentCorrelationId")
+                }
+                repair_items = [
+                    item
+                    for item in items
+                    if item.get("id") in missing_metadata
+                    or item.get("contentCorrelationId") in missing_correlations
+                ]
+                fresh = list(dict.fromkeys([*fresh, *(item["id"] for item in repair_items)]))
+                matched_aliases = {item["id"] for item in repair_items if item.get("id")}
+                matched_correlations = {
+                    item["contentCorrelationId"]
+                    for item in repair_items
+                    if item.get("contentCorrelationId")
+                }
+                unavailable = [
+                    transcript
+                    for transcript in missing_entries
+                    if not (
+                        {
+                            alias
+                            for alias in (transcript.get("id"), transcript.get("source_id"))
+                            if alias
+                        }
+                        & matched_aliases
+                        or (
+                            transcript.get("contentCorrelationId")
+                            and transcript.get("contentCorrelationId") in matched_correlations
+                        )
                     )
-                )
+                ]
+                # Graph can stop listing an old artifact. Mark that lookup as
+                # complete so the staged migration cannot retry it forever;
+                # without a callId it remains isolated rather than being
+                # guessed into another occurrence.
+                for transcript in unavailable:
+                    store.save_meeting(
+                        user_id,
+                        meeting.get("subject") or "Teams meeting",
+                        {
+                            "meeting_id": event.meeting_id,
+                            "transcript": {
+                                **transcript,
+                                "session_metadata_checked": True,
+                                "session_metadata_status": "unavailable",
+                            },
+                        },
+                    )
+                if unavailable:
+                    log.info(
+                        "Historical transcript metadata unavailable user=%s meeting=%s count=%s",
+                        user_id,
+                        tag,
+                        len(unavailable),
+                    )
             if found is not None and kind == "insight":
                 found["new_insights"] += len(fresh)
             store.enqueue(

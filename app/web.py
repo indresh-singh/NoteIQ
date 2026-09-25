@@ -1165,7 +1165,23 @@ def create_app(
             ) from None
         if not ok:
             raise HTTPException(502, "The AI provider could not generate a summary. Try again.")
-        return present_meeting(store.meeting(user["id"], meeting_id))
+        # Return only the provider data the clicked session needs. The browser
+        # can update that card immediately; returning the whole meeting only to
+        # discard it and fetch every meeting again made successful generations
+        # look stale when a periodic refresh overlapped this request.
+        updated = scoped_meeting(store.meeting(user["id"], meeting_id), body.occurrence_id)
+        insights = [
+            {"insight": entry["insight"]}
+            for entry in updated["content"].get("insights", [])
+            if (entry.get("insight", {}).get("provider") or "copilot") == provider
+        ]
+        return {
+            "status": "saved",
+            "meeting_id": meeting_id,
+            "occurrence_id": body.occurrence_id,
+            "provider": provider,
+            "insights": insights,
+        }
 
     @app.post("/api/sync")
     async def sync(request: Request, user: dict = Depends(current_user)):

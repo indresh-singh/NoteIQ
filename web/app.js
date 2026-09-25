@@ -10,6 +10,7 @@ let lastSessionRenewal = -Infinity;
 let renewingSession = false;
 let inTeams = false;
 let loading = false;
+let regenerating = 0;
 let teamsUserId = "";
 let syncMessage = "";
 let previousMeetings = "";
@@ -446,12 +447,30 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
     regenerateButton.onclick = async () => {
       regenerateButton.disabled = true;
       regenerateButton.classList.add("spinning");
+      let counted = false;
       try {
-        await api(`/api/meetings/${meeting.id}/regenerate`, {provider: selected, occurrence_id: meeting.occurrence_id}, 90000);
-        await refresh();
+        // Let an already-running refresh finish before generation starts. Once
+        // counted, periodic refreshes stand aside so they cannot replace this
+        // card while its response is being applied to the live DOM.
+        while (loading && token) await new Promise((resolve) => setTimeout(resolve, 50));
+        if (!token) return;
+        regenerating += 1;
+        counted = true;
+        const requestedProvider = selected;
+        const result = await api(`/api/meetings/${meeting.id}/regenerate`, {
+          provider: requestedProvider, occurrence_id: meeting.occurrence_id,
+        }, 90000);
+        byProvider[result.provider] = result.insights || [];
+        if (selected === result.provider) {
+          updateProviderText();
+          updateExportVisibility();
+          if (activeContentButton) activeContentButton.click();
+        }
+        showError();
       } catch (error) {
         showError(error.message);
       } finally {
+        if (counted) regenerating -= 1;
         regenerateButton.classList.remove("spinning");
         updateToggle();
       }
@@ -952,7 +971,7 @@ async function waitForRefresh() {
 }
 
 async function refresh(sync = false) {
-  if (!token || loading) return;
+  if (!token || loading || regenerating) return;
   const startedWith = token;
   loading = true;
   $("#refresh").disabled = true;

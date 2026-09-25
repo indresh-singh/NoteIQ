@@ -17,7 +17,7 @@ from pathlib import Path
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
-from app.occurrences import select_session, transcript_version
+from app.occurrences import entries, requires_sessions, select_session, transcript_version
 
 log = logging.getLogger(__name__)
 SESSION_IDLE_SECONDS = 8 * 3600
@@ -1516,6 +1516,53 @@ class Store:
             ).fetchall()
         # Duplicate rows for one meeting are retained deliberately; poll once.
         return list(dict.fromkeys(row["meeting_id"] for row in rows))
+
+    def session_repair_candidates(self, limit: int) -> list[tuple[str, str]]:
+        """Stored meetings whose transcript session metadata needs one Graph refresh.
+
+        This deliberately reads the JSON documents in Python so SQLite and
+        PostgreSQL use exactly the same predicate. ``limit`` bounds the Graph
+        and AI work produced by each worker sweep.
+        """
+        if limit <= 0:
+            return []
+        with self.connect() as db:
+            rows = db.execute(
+                """SELECT m.user_id, m.meeting_id, m.content FROM meetings m
+                JOIN users u ON u.id=m.user_id
+                WHERE u.enabled=1 AND (m.source IS NULL OR m.source<>'upload')
+                AND m.meeting_id<>''
+                ORDER BY COALESCE(m.occurred_at, m.created) DESC, m.id DESC"""
+            ).fetchall()
+            pending = db.execute("SELECT payload FROM jobs WHERE status='pending'").fetchall()
+        busy = set()
+        for row in pending:
+            try:
+                payload = json.loads(row["payload"])
+            except (TypeError, ValueError):
+                continue
+            if payload.get("user_id") and payload.get("meeting_id"):
+                busy.add((payload["user_id"], payload["meeting_id"]))
+        result = []
+        seen = set()
+        for row in rows:
+            key = (row["user_id"], row["meeting_id"])
+            if key in seen or key in busy:
+                continue
+            seen.add(key)
+            content = json.loads(row["content"])
+            if content.get("sync_status") in TERMINAL_MEETING_SYNC_STATUSES:
+                continue
+            transcripts = entries(content, "transcript")
+            if not requires_sessions(content) or not any(
+                item["transcript"].get("session_metadata_checked") is not True
+                for item in transcripts
+            ):
+                continue
+            result.append(key)
+            if len(result) >= limit:
+                break
+        return result
 
     def transcript_aliases(self, user_id: str) -> set[tuple[str, str]]:
         """Every (meeting, transcript alias) pair this user already holds.

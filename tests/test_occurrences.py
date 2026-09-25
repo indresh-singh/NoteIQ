@@ -301,7 +301,10 @@ def test_regenerate_requires_session_and_preserves_other_sessions(
             url, headers=signed_in, json={"provider": provider, "occurrence_id": "call:today"}
         )
         assert response.status_code == 200
-    groups = response.json()["content"]["occurrences"]
+        assert response.json()["occurrence_id"] == "call:today"
+        assert response.json()["provider"] == provider
+        assert len(response.json()["insights"]) == 1
+    groups = sessions(store.find_meeting(USER, "series"))
     assert [len(g["insights"]) for g in groups] == [1, 1]
     assert groups[1]["insights"][0]["insight"]["actionItems"] == [{"text": "Follow up"}]
 

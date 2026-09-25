@@ -14,8 +14,7 @@ local.settings.json
 *.key
 .DS_Store
 .python_packages/
-dist/
-.azurite/
+Do .azurite/
 data/
 scripts/grant_access.ps1
 docs/AZURE RESOURCES
