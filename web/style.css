@@ -68,6 +68,7 @@ body.contrast .send-button:hover{background:#0f0;color:#000}
 
 .recover-meeting{display:flex;flex-wrap:wrap;justify-content:center;align-items:stretch;gap:8px;margin:22px auto 28px;max-width:680px}.recover-meeting label{width:100%;font-size:12px;color:var(--muted)}.recover-meeting input{min-width:280px;flex:1;height:38px;padding:0 12px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--text);font:inherit;font-size:13px;box-sizing:border-box}.recover-meeting button{height:38px;padding:0 15px}
 .meeting-warning{margin:12px 0;padding:11px 13px;border-left:4px solid #c47b00;border-radius:6px;background:#fff7e6;color:#704800;font-size:13px}body.dark .meeting-warning{background:#3b3020;color:#ffd58a}body.contrast .meeting-warning{border:1px solid #fff;border-left-width:4px;background:#000;color:#fff}
+#recovery-status{width:100%;margin:4px 0 0;overflow-wrap:anywhere}
 
 .header-actions{display:flex;align-items:center;gap:10px}.integration-shortcut{display:flex;align-items:center;gap:6px;padding:6px 10px}.integration-shortcut img{width:17px;height:17px}.planner-shortcut{border-color:#b9d4b8;color:#285f27}.planner-shortcut:hover{border-color:#31752f;color:#31752f}
 

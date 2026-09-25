@@ -6,6 +6,12 @@ Microsoft 365 Copilot meeting transcripts, notes and action items in a **Teams p
 
 The app subscribes to transcripts and insights for connected users, verifies the organizer, and groups the results by meeting. Copilot does the summarization. NoteIQ sends Activity-feed notifications directly to the organizer using the app identity, without Azure Bot Service. See [the upgrade steps](docs/transcripts-and-messages.md).
 
+Use **Emails** on a meeting or custom transcript to open a draft in your default email
+app containing the selected provider's **Meeting Summary** and **Action Items**, including
+owners and due dates. Recurring meetings include only the selected session. Add recipients,
+review the draft, and send it from your email app. A configured email app is required;
+very long drafts may exceed the email app's `mailto` link limit.
+
 ## Launch
 
 Follow [the short setup guide](docs/setup.md) for the Entra app settings and Teams installation.

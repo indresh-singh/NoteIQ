@@ -51,11 +51,19 @@ def main():
             browser = playwright.chromium.launch(args=["--host-resolver-rules=MAP * ~NOTFOUND"])
             context = browser.new_context(viewport={"width": 1280, "height": 950})
             errors, exports = [], []
+            recovery_status = 200
             router = make_router(client, errors)
 
             def route_request(route):
                 url = route.request.url
-                if url.endswith("/api/clickup"):
+                if url.endswith("/api/recover-meeting"):
+                    route.fulfill(
+                        status=recovery_status,
+                        json={"found": 1, "queued": 1}
+                        if recovery_status == 200
+                        else {"detail": "Meeting not found for your organizer account."},
+                    )
+                elif url.endswith("/api/clickup"):
                     route.fulfill(
                         json={
                             "connected": True,
@@ -90,6 +98,7 @@ def main():
                             "id": transcript,
                             "local_id": local_id,
                             "callId": f"day{day}",
+                            "contentCorrelationId": f"correlation-{day}",
                             "createdDateTime": f"2026-09-{day}T12:00:00Z",
                         },
                         "insight": {
@@ -101,6 +110,27 @@ def main():
                         },
                     },
                 )
+                for provider in ("copilot", "openrouter"):
+                    store.save_meeting(
+                        USER,
+                        "Daily Brief",
+                        {
+                            "meeting_id": "series",
+                            "insight": {
+                                "id": f"{provider}:day{day}",
+                                "provider": provider,
+                                # Copilot joins by correlation; AI joins by call.
+                                "contentCorrelationId": f"correlation-{day}",
+                                "occurrence_id": None
+                                if provider == "copilot"
+                                else f"call:day{day}",
+                                "endDateTime": f"2026-09-{day}T13:09:09Z"
+                                if provider == "copilot"
+                                else None,
+                                "meetingNotes": [{"text": f"{provider} notes day {day}"}],
+                            },
+                        },
+                    )
             page.get_by_role("button", name="Refresh", exact=True).click()
             expect(page.locator(".meeting-series")).to_have_count(1)
             sessions = page.locator(".meeting-occurrence")
@@ -109,6 +139,17 @@ def main():
             assert sessions.nth(1).get_attribute("open") is None
             expect(sessions.nth(0).locator("summary").first).to_contain_text("24")
             expect(sessions.nth(1).locator("summary").first).to_contain_text("23")
+            latest = sessions.nth(0)
+            session_date = latest.locator("time").inner_text()
+            for provider, label in (("copilot", "Copilot"), ("openrouter", "OpenRouter")):
+                latest.get_by_role("radio", name=label, exact=True).click()
+                expect(latest.locator("time")).to_have_text(session_date)
+                expect(latest.locator(".card-content")).to_contain_text(
+                    f"{provider} notes day 24"
+                )
+                expect(latest.locator(".card-content")).not_to_contain_text("day 23")
+            latest.get_by_role("radio", name="ChatGPT Enterprise", exact=True).click()
+            expect(latest.locator("time")).to_have_text(session_date)
             sessions.nth(1).locator("summary").first.click()
             older = sessions.nth(1)
             older.get_by_role("button", name="Action items", exact=True).click()
@@ -126,12 +167,36 @@ def main():
             expect(older.locator(".card-content")).to_contain_text("Regenerated September 23")
             expect(sessions.nth(0).locator(".card-content")).to_contain_text("Notes day 24")
             expect(older).to_have_attribute("open", "")
+
+            # Recovery acknowledges a queued check, not new Copilot results.
+            # Its outcome survives both a stale throttle flag and manual Refresh.
+            page.evaluate("syncThrottled = true")
+            page.locator("#meeting-url").fill("https://teams.microsoft.com/meet/123456789")
+            page.get_by_role("button", name="Check meeting", exact=True).click()
+            recovery = page.locator("#recovery-status")
+            expect(recovery).to_contain_text("background check")
+            expect(recovery).to_contain_text("existing results may stay unchanged")
+            page.wait_for_function("!loading")
+            page.evaluate("refresh()")
+            expect(recovery).to_contain_text("background check")
+            page.get_by_role("button", name="Refresh", exact=True).click()
+            expect(page.locator("#refresh")).to_be_enabled()
+            expect(recovery).to_contain_text("background check")
+            recovery_status = 404
+            page.get_by_role("button", name="Check meeting", exact=True).click()
+            expect(recovery).to_contain_text("Meeting not found")
+            page.evaluate("refresh()")
+            expect(recovery).to_contain_text("Meeting not found")
             page.set_viewport_size({"width": 390, "height": 844})
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
             assert not errors, errors
+            page.evaluate("signedOut()")
+            expect(recovery).to_be_hidden()
+            expect(recovery).to_have_text("")
             browser.close()
     print(
-        "Recurring sessions: collapse, order, scoped exports, transcripts and regeneration passed."
+        "Recurring sessions: provider dates, scoped content/exports, regeneration and durable "
+        "recovery outcomes passed."
     )
 
 

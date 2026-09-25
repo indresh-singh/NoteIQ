@@ -39,7 +39,13 @@ function showError(message = "") {
   $("#error").hidden = !message;
 }
 
+function showRecoveryStatus(message = "") {
+  $("#recovery-status").textContent = message;
+  $("#recovery-status").hidden = !message;
+}
+
 function signedOut() {
+  showRecoveryStatus();
   syncMessage = "";
   syncThrottled = false;
   clearTimeout(pauseTimer);
@@ -228,6 +234,34 @@ function providerLabel(provider) {
   if (provider === "openai") return "ChatGPT Enterprise";
   if (provider === "openrouter") return "OpenRouter";
   return "Microsoft 365 Copilot";
+}
+
+function meetingEmail(meeting, segments) {
+  const lines = [meeting.subject || "Meeting"];
+  const when = meeting.content.started_at || meeting.content.meeting_metadata?.start_date_time;
+  if (when) lines.push(`Date: ${when}`);
+  const noteLines = (note, depth = 0) => {
+    const indent = "  ".repeat(depth);
+    const text = [optionalText(note.title), optionalText(note.text)].filter(Boolean).join(": ");
+    return [
+      ...(text ? [`${indent}- ${text}`] : []),
+      ...(note.subpoints || []).flatMap((point) => noteLines(point, depth + 1)),
+    ];
+  };
+  for (const [heading, field] of [["Meeting Summary", "meetingNotes"], ["Action Items", "actionItems"]]) {
+    lines.push("", heading, "");
+    const items = segments.flatMap((segment) => segment.insight?.[field] || []);
+    if (!items.length) lines.push("No items identified.");
+    for (const item of items) {
+      lines.push(...noteLines(item));
+      if (field === "actionItems") {
+        lines.push(`  Owner: ${optionalText(item.ownerDisplayName) || "Not specified"}`);
+        if (optionalText(item.dueDate)) lines.push(`  Due: ${item.dueDate}`);
+      }
+    }
+  }
+  const subject = `${meeting.subject || "Meeting"} - Summary and Action Items`.replace(/[\r\n]+/g, " ");
+  return `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(lines.join("\r\n"))}`;
 }
 
 const occurrenceOpen = new Map();
@@ -509,9 +543,18 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
     plannerActions.append(plannerSelect, plannerButton);
     actionButtons.append(plannerActions);
 
+    const emailButton = element("button", "Emails", "send-button");
+    emailButton.type = "button";
+    emailButton.title = "Open an email draft with the meeting summary and action items";
+    emailButton.onclick = () => {
+      window.location.href = meetingEmail(meeting, byProvider[selected]);
+    };
+    actionButtons.append(emailButton);
+
     // Export only ever sends whichever provider's items are on screen right
     // now, so the count on the button always matches what was just clicked.
     function updateExportVisibility() {
+      emailButton.disabled = !byProvider[selected].length;
       const hasActions = hasActionItems(meeting.content, selected);
       const clickupVisible = lists.length > 0 && hasActions;
       clickupActions.dataset.hasActions = String(clickupVisible);
@@ -543,14 +586,14 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
         article.append(section);
       }
       const exportActions = element("div", "", "buttons action-buttons");
-      exportActions.append(clickupActions, plannerActions);
-      if (lists.length || plans.length) article.append(exportActions);
+      exportActions.append(clickupActions, plannerActions, emailButton);
+      article.append(exportActions);
       if (!lists.length && !plans.length) article.append(element("p", "Connect ClickUp or add a Microsoft Planner plan in Account settings to create tasks.", "hint"));
       destination.append(article);
       continue;
     }
     article.append(buttons);
-    if (lists.length || plans.length) article.append(actionButtons);
+    article.append(actionButtons);
     article.append(content, footerLine);
     updateProviderText();
     updateToggle();
@@ -944,23 +987,21 @@ $("#refresh").onclick = () => refresh(true);
 $("#recover-meeting").onsubmit = async (event) => {
   event.preventDefault();
   const button = $("#recover-meeting button");
+  const requestToken = token;
   button.disabled = true;
+  showError();
+  showRecoveryStatus("Looking up the meeting in Microsoft 365…");
   try {
     const result = await api("/api/recover-meeting", {meeting_url: $("#meeting-url").value}, 60000);
-    syncMessage = result.message || `Meeting found. Checking ${result.queued ? "transcript and Copilot insights" : "Microsoft 365"}…`;
-    setTimeout(() => refresh(), 1500);
+    if (token !== requestToken) return;
+    // This acknowledges a lookup/queue operation, not newly fetched insights.
+    // Keep it beside the form so polling, throttling and Refresh cannot erase it.
+    showRecoveryStatus(result.message || (result.queued
+      ? "Meeting found. A background check for transcripts and Copilot insights was queued. Any newly available results will appear automatically; existing results may stay unchanged."
+      : "Meeting found. No additional check was queued. Existing results may stay unchanged; use Refresh to check Microsoft 365."));
+    chaseResults();
   } catch (error) {
-    if ([403, 409, 429].includes(error.status)) {
-      // Ownership/access responses are durable meeting outcomes, not a
-      // transient toast. Keep the explanation in the status bar so the next
-      // 15-second refresh does not erase it before the user can read it. A
-      // 429 ("try again in N seconds") is cleared once the pause ends.
-      syncMessage = error.message;
-      syncThrottled = error.status === 429;
-      $("#status").textContent = syncMessage;
-      $(".statusbar").hidden = false;
-      showError();
-    } else showError(error.message);
+    if (token === requestToken) showRecoveryStatus(error.message);
   }
   finally { button.disabled = false; }
 };
