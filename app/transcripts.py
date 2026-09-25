@@ -1,9 +1,8 @@
 """Save Teams transcript text; Copilot generation happens independently in Microsoft 365.
 
-Whenever OpenRouter is configured, the same transcript text is also sent to
-OpenRouter for a second, independent meeting summary and action item list
-(see app/openrouter.py) — Copilot and OpenRouter insights are captured side
-by side, not as an either/or choice.
+When an external AI provider is configured, the transcript text is also sent
+to that provider for an independent meeting summary and action item list.
+Copilot, ChatGPT Enterprise, and OpenRouter insights are stored side by side.
 """
 
 import logging
@@ -14,9 +13,8 @@ from app.activity import INSIGHTS_READY, queue_notification
 from app.adaptive_cards import build_card
 from app.config import settings
 from app.graph_client import GraphClient, retryable
-from app.models import MeetingSync, SessionInsightEvent, TranscriptEvent, age_seconds
 from app.meetings import meeting_participants
-from app.models import MeetingSync, TranscriptEvent, age_seconds
+from app.models import MeetingSync, SessionInsightEvent, TranscriptEvent, age_seconds
 from app.occurrences import (
     entries,
     requires_sessions,
@@ -61,7 +59,8 @@ def queue_missing_session_insights(store: Store, user_id: str, meeting_id: str) 
         return 0
     config = settings()
     payloads = []
-    for group in sessions(content):
+    groups = sessions(content)
+    for group in groups:
         version = transcript_version(group)
         for provider in config.external_summary_providers:
             current = any(
@@ -85,7 +84,7 @@ def queue_missing_session_insights(store: Store, user_id: str, meeting_id: str) 
             "Session insight repair queued user=%s meeting=%s sessions=%s jobs=%s",
             user_id,
             digest(meeting_id)[:8],
-            len(sessions(content)),
+            len(groups),
             len(payloads),
         )
     return len(payloads)
@@ -96,8 +95,8 @@ def meeting_transcript_text(store: Store, user_id: str, content: dict) -> str:
 
     Stopping and restarting transcription splits a meeting into several
     transcripts, and Copilot summarises each in isolation. Joining them first
-    lets OpenRouter summarise the meeting as a whole instead of producing one
-    partial summary per segment.
+    lets each external provider summarise the meeting as a whole instead of
+    producing one partial summary per segment.
     """
     ordered = sorted(
         entries(content, "transcript"),
@@ -341,6 +340,7 @@ async def process_transcript(event: TranscriptEvent, graph: GraphClient, store: 
                         "meeting_type": meeting.get("meetingType"),
                         "start_date_time": meeting.get("startDateTime"),
                         "end_date_time": meeting.get("endDateTime"),
+                        "participants": meeting_participants(meeting),
                     },
                     "transcript": repaired,
                 },

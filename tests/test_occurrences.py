@@ -406,6 +406,9 @@ async def test_metadata_repair_reuses_text_then_generates_once_for_the_call(
 ):
     monkeypatch.setenv("OPENAI_API_KEY", "test")
     settings.cache_clear()
+    organizer = samples["meeting"]["participants"]["organizer"]
+    organizer["upn"] = "organizer@example.com"
+    organizer["identity"]["user"]["displayName"] = "Organizer"
     for transcript_id, text in (("first", "Before pause"), ("second", "After resume")):
         local_id = store.save_transcript(USER, "series", transcript_id, text)
         store.save_meeting(
@@ -438,6 +441,9 @@ async def test_metadata_repair_reuses_text_then_generates_once_for_the_call(
         assert result == "SESSION_METADATA_REPAIRED"
     assert graph.request.await_count == 4
     assert all(not call.args[1].endswith("/content") for call in graph.request.await_args_list)
+    assert store.find_meeting(USER, "series")["meeting_metadata"]["participants"] == [
+        {"name": "Organizer", "email": "organizer@example.com", "organizer": True}
+    ]
 
     job = store.claim_job()
     event = parse_event(job["payload"])
