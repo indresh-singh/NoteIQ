@@ -1,4 +1,17 @@
+import shutil
+import subprocess
+
+import pytest
+
 from app.config import ROOT
+
+
+def test_javascript_sources_parse():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is not installed")
+    for script in (ROOT / "web").glob("*.js"):
+        subprocess.run([node, "--check", script], check=True, capture_output=True, text=True)
 
 
 def test_note_heading_fallback_does_not_truncate_the_note_text():

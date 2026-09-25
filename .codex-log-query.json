@@ -1,0 +1,4 @@
+{
+  "query": "ContainerAppConsoleLogs_CL\n| where ContainerAppName_s == 'dev-daio-noteiq'\n| where TimeGenerated > ago(30m)\n| where Log_s has_any ('/auth/', 'Connect Microsoft 365', 'HTTP handled error', 'Application startup complete', 'Traceback', ' level=ERROR ', ' level=WARNING ')\n| project TimeGenerated, Log_s\n| order by TimeGenerated desc\n| take 300",
+  "timespan": "PT1H"
+}

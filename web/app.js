@@ -290,52 +290,6 @@ function meetingEmail(meeting, segments) {
   const noteLine = (note) => {
     const noteTitle = optionalText(note.title);
     const text = optionalText(note.text);
-    const lead = noteTitle ? `<strong style="color:#242638">${escapeHtml(noteTitle)}${text ? ":" : ""}</strong> ` : "";
-    return lead + escapeHtml(text) + subpointsHtml(note.subpoints);
-  };
-  const subpointsHtml = (points) => points?.length
-    ? `<ul style="margin:6px 0 0;padding-left:20px;color:#4a4e63">${points
-        .map((point) => `<li style="margin:0 0 4px">${noteHtml(point)}</li>`).join("")}</ul>`
-    : "";
-  const pill = (label, value) =>
-    `<span style="display:inline-block;margin:8px 8px 0 0;padding:3px 10px;border-radius:12px;background:#ffffff;border:1px solid #dfe2f2;font-size:12px;color:#64697c">` +
-    `<span style="font-weight:600;color:#5056b8;letter-spacing:.4px">${label}</span>&nbsp; ` +
-    `<strong style="font-weight:700;color:#242638">${escapeHtml(value)}</strong></span>`;
-  const actionHtml = (item, index) => {
-    const marker = numbered
-      ? `<span style="display:inline-block;min-width:22px;height:22px;line-height:22px;margin-right:8px;border-radius:11px;background:#5056b8;color:#ffffff;font-size:12px;font-weight:700;text-align:center">${index + 1}</span>`
-      : `<span style="color:#5056b8;font-weight:700;margin-right:6px">&#9744;</span>`;
-    const due = optionalText(item.dueDate);
-    return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;margin:0 0 10px">` +
-      `<tr><td style="padding:12px 16px;background:#f7f8fc;border:1px solid #e4e7f0;border-left:4px solid #5056b8;border-radius:8px;${font};font-size:14px;line-height:1.55;color:#242638">` +
-      `${marker}${noteHtml(item)}<div>${pill("OWNER", optionalText(item.ownerDisplayName) || "Not specified")}` +
-      `${due ? pill("DUE", emailDate(due)) : ""}</div></td></tr></table>`;
-  };
-  const sectionHtml = ({heading, field, items}) => {
-    const count = items.length ? ` <span style="font-size:12px;font-weight:600;color:#64697c">(${items.length})</span>` : "";
-    const body = !items.length
-      ? `<p style="margin:0;color:#64697c;font-style:italic">No items identified.</p>`
-      : field === "actionItems"
-        ? items.map(actionHtml).join("")
-        : `<ul style="margin:0;padding-left:20px">${items.map((item) => `<li style="margin:0 0 10px">${noteHtml(item)}</li>`).join("")}</ul>`;
-    return `<h2 style="margin:26px 0 12px;padding-bottom:8px;border-bottom:2px solid #eceefa;${font};font-size:17px;font-weight:700;color:#5056b8">${heading}${count}</h2>${body}`;
-  };
-  const html =
-    `<div style="${font};font-size:14px;line-height:1.6;color:#242638">` +
-    `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:680px;border-collapse:separate">` +
-    `<tr><td style="background:#5056b8;padding:22px 28px;border-radius:12px 12px 0 0;${font}">` +
-    `<div style="font-size:11px;font-weight:600;letter-spacing:1.6px;color:#d6d8ff">MINUTES OF MEETING</div>` +
-    `<div style="margin-top:4px;font-size:22px;font-weight:700;line-height:1.3;color:#ffffff">${escapeHtml(title)}</div>` +
-    (when ? `<div style="margin-top:6px;font-size:13px;color:#e4e5ff">${escapeHtml(when)}</div>` : "") +
-    `</td></tr><tr><td style="background:#ffffff;border:1px solid #e4e7f0;border-top:0;border-radius:0 0 12px 12px;padding:4px 28px 26px;${font};font-size:14px;line-height:1.6;color:#242638">` +
-    (participantNames
-      ? `<p style="margin:22px 0 0;padding:10px 14px;background:#f7f8fc;border-radius:8px;font-size:13px;color:#4a4e63">` +
-        `<span style="font-weight:600;color:#5056b8;letter-spacing:.4px">PARTICIPANTS</span>&nbsp; ${escapeHtml(participantNames)}</p>`
-      : "") +
-    sections.map(sectionHtml).join("") +
-    `<p style="margin:26px 0 0;padding-top:12px;border-top:1px solid #eceefa;font-size:12px;color:#8a8fa3"><a href="${escapeHtml(window.location.origin)}/" style="color:#0563c1;text-decoration:underline">Sent from NoteIQ</a></p>` +
-    `</td></tr></table></div>`;
-
     return noteTitle ? `**${noteTitle}:** ${text}`.trim() : text;
   };
   const noteLines = (note, depth = 0) => {
