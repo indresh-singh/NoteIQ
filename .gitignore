@@ -19,3 +19,4 @@ data/
 scripts/grant_access.ps1
 docs/AZURE RESOURCES
 .env.dev.example
+dist/noteiq-teams.zip

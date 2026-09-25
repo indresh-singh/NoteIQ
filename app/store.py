@@ -359,6 +359,8 @@ def job_priority(payload: str) -> int:
         fields = json.loads(payload)
     except ValueError:
         return 1
+    if fields.get("type") == "session_insight" or fields.get("metadata_only") is True:
+        return 2
     return 0 if "insight_id" in fields or "transcript_id" in fields else 1
 
 
@@ -1101,7 +1103,9 @@ class Store:
             try:
                 fields = json.loads(payload)
                 kind = (
-                    "InsightEvent"
+                    "SessionInsightEvent"
+                    if fields.get("type") == "session_insight"
+                    else "InsightEvent"
                     if "insight_id" in fields
                     else "TranscriptEvent"
                     if "transcript_id" in fields
@@ -1473,6 +1477,16 @@ class Store:
                 (user_id, meeting_id),
             ).fetchone()
         return json.loads(row["content"]) if row else None
+
+    def find_meeting_row(self, user_id: str, meeting_id: str) -> dict | None:
+        """One complete meeting row by Graph id, without loading the user's list."""
+        with self.connect() as db:
+            row = db.execute(
+                """SELECT id, subject, content, created FROM meetings
+                WHERE user_id=? AND meeting_id=? ORDER BY id DESC LIMIT 1""",
+                (user_id, meeting_id),
+            ).fetchone()
+        return dict(row, content=json.loads(row["content"])) if row else None
 
     def sync_candidates(
         self,

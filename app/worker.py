@@ -7,12 +7,12 @@ from app.activity import send_next_notification
 from app.config import settings
 from app.graph_client import GraphClient, graph_throttle_seconds
 from app.insights import process_insight
-from app.models import MeetingSync, TranscriptEvent, UserSync, parse_event
+from app.models import MeetingSync, SessionInsightEvent, TranscriptEvent, UserSync, parse_event
 from app.observability import log_context
 from app.store import Store
 from app.subscriptions import renew_subscriptions
 from app.sync import discover_meetings, queue_session_repairs, queue_sync, sync_meeting
-from app.transcripts import process_transcript
+from app.transcripts import process_session_insight, process_transcript
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +45,8 @@ async def execute_job(store: Store, graph: GraphClient, job: dict) -> None:
             process = process_transcript if isinstance(event, TranscriptEvent) else process_insight
             if isinstance(event, MeetingSync):
                 process = sync_meeting
+            elif isinstance(event, SessionInsightEvent):
+                process = process_session_insight
             elif isinstance(event, UserSync):
                 process = discover_meetings
             log.info(

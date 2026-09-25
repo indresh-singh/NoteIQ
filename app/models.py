@@ -78,6 +78,7 @@ class TranscriptEvent(BaseModel):
     user_id: UUID
     meeting_id: str = Field(min_length=1)
     transcript_id: str = Field(min_length=1)
+    metadata_only: bool = False
 
     @classmethod
     def from_resource(
@@ -119,17 +120,29 @@ class MeetingSync(BaseModel):
     meeting_id: str = Field(min_length=1)
 
 
+class SessionInsightEvent(BaseModel):
+    type: Literal["session_insight"] = "session_insight"
+    user_id: UUID
+    meeting_id: str = Field(min_length=1)
+    occurrence_id: str = Field(min_length=1)
+    provider: Literal["openai", "openrouter"]
+
+
 class UserSync(BaseModel):
     type: Literal["user_sync"] = "user_sync"
     user_id: UUID
 
 
-def parse_event(payload: str) -> InsightEvent | TranscriptEvent | MeetingSync | UserSync:
+def parse_event(
+    payload: str,
+) -> InsightEvent | TranscriptEvent | MeetingSync | SessionInsightEvent | UserSync:
     import json
 
     data = json.loads(payload)
     if data.get("type") == "user_sync":
         return UserSync.model_validate(data)
+    if data.get("type") == "session_insight":
+        return SessionInsightEvent.model_validate(data)
     model = (
         TranscriptEvent
         if "transcript_id" in data

@@ -67,7 +67,7 @@ async def test_openai_uses_responses_api_and_parses_output_text(monkeypatch):
     note_schema = schema["schema"]["properties"]["meetingNotes"]["items"]
     assert note_schema["properties"]["subpoints"]["items"]["type"] == "object"
     assert list(schema["schema"]["properties"])[0] == "actionItems"
-    assert "direct requests, assignments, agreed next steps" in payloads[0]["input"][0]["content"]
+    assert "only the high-value concrete follow-ups" in payloads[0]["input"][0]["content"]
 
 
 async def test_openai_parses_the_rest_api_output_array(monkeypatch):

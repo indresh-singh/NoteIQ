@@ -3,10 +3,15 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.config import settings
-from app.models import Insight, MeetingSync, TranscriptEvent
+from app.models import Insight, MeetingSync, SessionInsightEvent, TranscriptEvent, parse_event
 from app.occurrences import present_meeting, select_session, sessions, transcript_version
 from app.sync import sync_meeting
-from app.transcripts import meeting_transcript_text, process_transcript
+from app.transcripts import (
+    meeting_transcript_text,
+    process_session_insight,
+    process_transcript,
+    queue_missing_session_insights,
+)
 from tests.conftest import USER
 
 
@@ -347,6 +352,7 @@ async def test_sync_recovers_legacy_metadata_once(store, graph):
     await sync_meeting(MeetingSync(user_id=USER, meeting_id="series"), graph, store)
     job = store.next_job()
     assert '"transcript_id":"a"' in job["payload"]
+    assert parse_event(job["payload"]).metadata_only is True
     store.finish_job(job["id"], "done")
     saved = store.find_meeting(USER, "series")["transcript"]
     store.save_meeting(
@@ -357,6 +363,105 @@ async def test_sync_recovers_legacy_metadata_once(store, graph):
     graph.list.side_effect = [[{"id": "a"}], []]
     await sync_meeting(MeetingSync(user_id=USER, meeting_id="series"), graph, store)
     assert store.next_job() is None
+
+
+def test_complete_repair_queues_all_eleven_final_sessions_once(monkeypatch, store):
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    settings.cache_clear()
+    # Twelve transcript artifacts represent eleven calls because transcription
+    # was stopped and restarted during one of them.
+    for number in range(12):
+        call = "restart" if number in {0, 1} else f"call-{number}"
+        local_id = store.save_transcript(USER, "series", f"t-{number}", f"part {number}")
+        store.save_meeting(
+            USER,
+            "Daily Brief",
+            {
+                "meeting_id": "series",
+                "transcript": {
+                    "id": f"t-{number}",
+                    "local_id": local_id,
+                    "callId": call,
+                    "session_metadata_checked": True,
+                    "createdDateTime": f"2026-09-{number + 1:02}T10:00:00Z",
+                },
+            },
+        )
+
+    assert len(sessions(store.find_meeting(USER, "series"))) == 11
+    assert queue_missing_session_insights(store, USER, "series") == 11
+    events = []
+    while job := store.claim_job():
+        events.append(parse_event(job["payload"]))
+    assert len(events) == 11
+    assert all(isinstance(event, SessionInsightEvent) for event in events)
+    assert {event.occurrence_id for event in events} == {
+        "call:restart",
+        *(f"call:call-{number}" for number in range(2, 12)),
+    }
+
+
+async def test_metadata_repair_reuses_text_then_generates_once_for_the_call(
+    monkeypatch, store, samples
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    settings.cache_clear()
+    for transcript_id, text in (("first", "Before pause"), ("second", "After resume")):
+        local_id = store.save_transcript(USER, "series", transcript_id, text)
+        store.save_meeting(
+            USER,
+            "Daily Brief",
+            {
+                "meeting_id": "series",
+                "transcript": {"id": transcript_id, "local_id": local_id},
+            },
+        )
+
+    graph = AsyncMock()
+    graph.request.side_effect = [
+        samples["meeting"],
+        {"id": "first", "callId": "same-call", "createdDateTime": "2026-09-24T10:00:00Z"},
+        samples["meeting"],
+        {"id": "second", "callId": "same-call", "createdDateTime": "2026-09-24T10:10:00Z"},
+    ]
+    for transcript_id in ("first", "second"):
+        result = await process_transcript(
+            TranscriptEvent(
+                user_id=USER,
+                meeting_id="series",
+                transcript_id=transcript_id,
+                metadata_only=True,
+            ),
+            graph,
+            store,
+        )
+        assert result == "SESSION_METADATA_REPAIRED"
+    assert graph.request.await_count == 4
+    assert all(not call.args[1].endswith("/content") for call in graph.request.await_args_list)
+
+    job = store.claim_job()
+    event = parse_event(job["payload"])
+    assert isinstance(event, SessionInsightEvent)
+    assert event.occurrence_id == "call:same-call"
+    assert store.claim_job() is None
+    seen = []
+
+    class AI:
+        def __init__(self, config):
+            pass
+
+        async def summarize(self, key, subject, text):
+            seen.append((key, subject, text))
+            return Insight(id="generated", meetingNotes=[{"text": "Whole call"}])
+
+    monkeypatch.setattr("app.transcripts.OpenAI", AI)
+    assert await process_session_insight(event, graph, store) == "SESSION_INSIGHT_SAVED"
+    assert seen == [
+        ("series:call:same-call", samples["meeting"]["subject"], "Before pause\n\nAfter resume")
+    ]
+    group = sessions(store.find_meeting(USER, "series"))[0]
+    assert len(group["insights"]) == 1
+    assert group["insights"][0]["insight"]["transcript_version"] == transcript_version(group)
 
 
 def test_stale_generation_cannot_replace_complete_session_summary(store):

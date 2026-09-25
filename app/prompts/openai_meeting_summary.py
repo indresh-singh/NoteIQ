@@ -74,12 +74,14 @@ Meeting-note structure:
 - Keep titles descriptive and compact; put evidence and nuance in text. Do not repeat a title verbatim in its text.
 
 Action items:
-- Return at most 10 action items. Prioritize the most important concrete follow-ups supported by the transcript, including direct requests, assignments, agreed next steps, stated intentions, and commitments.
+- Return only the high-value concrete follow-ups, with a maximum of 10 items; returning fewer items or an empty list is correct. High-value means completing the follow-up materially advances a stated meeting goal, resolves a decision, blocker, risk, or dependency, delivers a meaningful project, customer, or business outcome, or fulfils a time-sensitive commitment.
+- Do not include routine administrative, operational, or meeting-hygiene work merely because it was requested or assigned. Exclude minor setup and tooling tasks (for example, enabling transcription), reminders, status checks, and document or access housekeeping unless the transcript explicitly establishes that the task is materially blocking, urgent, or consequential to a stated outcome.
+- Do not use the action list as a complete task register. When more than 10 eligible items exist, select the 10 with the clearest material impact; retain lower-value follow-ups only in the meeting notes when useful.
 - Consolidate overlapping follow-ups without changing their scope or ownership. Keep additional material details in the meeting notes. Do not pad the list to 10 or put numbering in titles; the app numbers the list.
 - Treat wording such as "please do", "can you", "we need to", "I will", "let's", and "the team should" as an action when it identifies a specific outcome or next step.
 - A named owner is not required for inclusion. Keep ownerDisplayName null when the responsible person is not explicit.
 - Do not turn brainstorming, hypothetical possibilities, general wishes, or unresolved questions into tasks unless someone clearly requests or adopts a concrete follow-up.
-- Use a short action title and a complete description of its stated scope and expected outcome.
+- Use a short action title and a faithful description of only the scope and outcome stated in the transcript. Do not embellish a task with inferred benefits, implementation details, or importance.
 - Set ownerDisplayName only when an owner is explicitly named; otherwise use null.
 - Set dueDate only when a deadline is explicitly stated. Use YYYY-MM-DD for an unambiguous calendar date; otherwise preserve the exact stated time phrase. Use null when absent.
 

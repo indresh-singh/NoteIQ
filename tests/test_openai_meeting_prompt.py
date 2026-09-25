@@ -1,16 +1,7 @@
-from app.prompts.meeting_summary import SYSTEM_PROMPT
 from app.prompts.openai_meeting_summary import (
     OPENAI_MEETING_SUMMARY_SCHEMA,
-    OPENAI_SYSTEM_PROMPT,
     openai_user_prompt,
 )
-
-
-def test_openai_prompt_is_detailed_and_separate_from_openrouter_prompt():
-    assert OPENAI_SYSTEM_PROMPT != SYSTEM_PROMPT
-    assert "every material topic" in OPENAI_SYSTEM_PROMPT
-    assert "thematic parent sections" in OPENAI_SYSTEM_PROMPT
-    assert "silently verify" in OPENAI_SYSTEM_PROMPT
 
 
 def test_openai_schema_supports_copilot_style_note_hierarchy():

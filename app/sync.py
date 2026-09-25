@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 # How far back any sweep or manual refresh looks. Graph's own transcript
 # discovery is bounded to the same window.
 RECENT_SECONDS = 7 * 86400
-SESSION_REPAIR_BATCH = 5
+SESSION_REPAIR_BATCH = 1
 
 # Manual Refresh runs inline so a click brings results back in the same
 # request, which means its cost has to be bounded as meetings and users grow:
@@ -647,9 +647,11 @@ async def sync_meeting(event, graph, store, found: dict | None = None):
             known.update(item.get("source_id") for item in saved_items)
             items = await graph.list(resource)
             fresh = [item["id"] for item in items if item["id"] not in known]
+            repair_ids: set[str] = set()
             if kind == "transcript":
-                # Upgrade historical records once through the normal transcript
-                # pipeline. This recovers callId and regenerates isolated results.
+                # Historical records already have transcript text. Queue a
+                # metadata-only lookup; AI generation is scheduled once per
+                # final call only after every part has its session metadata.
                 missing_entries = [
                     transcript
                     for transcript in saved_items
@@ -672,7 +674,8 @@ async def sync_meeting(event, graph, store, found: dict | None = None):
                     if item.get("id") in missing_metadata
                     or item.get("contentCorrelationId") in missing_correlations
                 ]
-                fresh = list(dict.fromkeys([*fresh, *(item["id"] for item in repair_items)]))
+                repair_ids = {item["id"] for item in repair_items}
+                fresh = [item_id for item_id in fresh if item_id not in repair_ids]
                 matched_aliases = {item["id"] for item in repair_items if item.get("id")}
                 matched_correlations = {
                     item["contentCorrelationId"]
@@ -719,6 +722,13 @@ async def sync_meeting(event, graph, store, found: dict | None = None):
                         tag,
                         len(unavailable),
                     )
+                    # If every historical part was unavailable, there is no
+                    # metadata job left to schedule the session generations.
+                    # This is also safe for mixed results: unchecked matched
+                    # parts keep the queue closed until their jobs finish.
+                    from app.transcripts import queue_missing_session_insights
+
+                    queue_missing_session_insights(store, user_id, event.meeting_id)
             if found is not None and kind == "insight":
                 found["new_insights"] += len(fresh)
             store.enqueue(
@@ -728,6 +738,19 @@ async def sync_meeting(event, graph, store, found: dict | None = None):
                     ).model_dump_json()
                     for item_id in fresh
                 ]
+                + (
+                    [
+                        TranscriptEvent(
+                            user_id=user_id,
+                            meeting_id=event.meeting_id,
+                            transcript_id=item_id,
+                            metadata_only=True,
+                        ).model_dump_json()
+                        for item_id in sorted(repair_ids)
+                    ]
+                    if kind == "transcript"
+                    else []
+                )
             )
             log.info(
                 "Meeting sync user=%s meeting=%s kind=%s available=%s new=%s",
@@ -735,7 +758,7 @@ async def sync_meeting(event, graph, store, found: dict | None = None):
                 tag,
                 kind,
                 len(items),
-                len(fresh),
+                len(fresh) + len(repair_ids),
             )
             if fresh:
                 # The first poll that sees an artifact brackets Microsoft's

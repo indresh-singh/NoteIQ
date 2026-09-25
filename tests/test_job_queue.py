@@ -2,7 +2,7 @@
 
 import sqlite3
 
-from app.models import InsightEvent, MeetingSync, TranscriptEvent, UserSync
+from app.models import InsightEvent, MeetingSync, SessionInsightEvent, TranscriptEvent, UserSync
 from app.store import Store, job_priority
 from tests.conftest import USER
 
@@ -12,6 +12,12 @@ def payloads():
         "insight": InsightEvent(user_id=USER, meeting_id="m", insight_id="i").model_dump_json(),
         "transcript": TranscriptEvent(
             user_id=USER, meeting_id="m", transcript_id="t"
+        ).model_dump_json(),
+        "metadata_repair": TranscriptEvent(
+            user_id=USER, meeting_id="m", transcript_id="t", metadata_only=True
+        ).model_dump_json(),
+        "session_insight": SessionInsightEvent(
+            user_id=USER, meeting_id="m", occurrence_id="call:c", provider="openai"
         ).model_dump_json(),
         "meeting_sync": MeetingSync(user_id=USER, meeting_id="m").model_dump_json(),
         "user_sync": UserSync(user_id=USER).model_dump_json(),
@@ -24,6 +30,8 @@ def test_content_fetches_outrank_polling():
     assert job_priority(kinds["transcript"]) == 0
     assert job_priority(kinds["meeting_sync"]) == 1
     assert job_priority(kinds["user_sync"]) == 1
+    assert job_priority(kinds["metadata_repair"]) == 2
+    assert job_priority(kinds["session_insight"]) == 2
 
 
 def test_unparseable_payload_is_treated_as_low_priority():

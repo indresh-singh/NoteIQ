@@ -289,6 +289,7 @@ class TestStagedSessionRepair:
         event = parse_event(store.next_job()["payload"])
         assert isinstance(event, TranscriptEvent)
         assert event.transcript_id == "new-id"
+        assert event.metadata_only is True
         assert "session_metadata_status" not in store.find_meeting(USER, "legacy")["transcript"]
 
 
