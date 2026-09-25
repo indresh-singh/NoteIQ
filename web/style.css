@@ -4,6 +4,7 @@
 
 .transcript-text { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.6; }
 ol.insight-actions{padding-left:28px}ol.insight-actions>li{padding-left:4px;margin-bottom:18px}ol.insight-actions>li::marker{font-weight:650;color:var(--accent)}
+.action-meta{margin:4px 0}.action-meta strong{font-weight:700;color:var(--text)}
 
 .note-collapsible{padding:12px 0;border-bottom:1px solid var(--line)}
 .note-collapsible:last-child{border-bottom:none}

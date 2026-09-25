@@ -39,7 +39,9 @@ def test_action_item_due_date_only_rendered_when_present():
         ),
         "Budget",
     )
-    assert "Due: 2026-09-20" in json.dumps(with_due)
+    card_text = json.dumps(with_due)
+    assert "**Ada**" in card_text
+    assert "Due: **2026-09-20**" in card_text
 
     without_due = build_card(
         Insight(id="i", actionItems=[{"text": "Send proposal", "ownerDisplayName": "Ada"}]),

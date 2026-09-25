@@ -25,10 +25,10 @@ def build_card(
         )
         if content:
             owner = (action.ownerDisplayName or "").strip() or "Owner not specified"
-            line = f"• {owner} — {content}"
+            line = f"• **{owner}** — {content}"
             due = (action.dueDate or "").strip()
             if due:
-                line += f" (Due: {due})"
+                line += f" (Due: **{due}**)"
             actions.append(line)
     if not notes and not actions:
         return None

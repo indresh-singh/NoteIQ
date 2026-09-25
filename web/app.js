@@ -246,12 +246,21 @@ function occurrenceLabel(subject, startedAt) {
   return `${subject} - ${day} ${hour}.${minute} ${date.getHours() < 12 ? "AM" : "PM"}`;
 }
 
+function actionMetadata(label, value) {
+  const line = element("p", "", "hint action-meta");
+  line.append(document.createTextNode(`${label}: `), element("strong", value));
+  return line;
+}
+
 function renderActions(items, numbered) {
   const list = element(numbered ? "ol" : "div", "", "insight-actions");
   for (const item of items) {
     const row = element(numbered ? "li" : "div");
-    row.append(renderNote(item), element("p", `Owner: ${optionalText(item.ownerDisplayName) || "Not specified"}`, "hint"));
-    if (optionalText(item.dueDate)) row.append(element("p", `Due: ${item.dueDate}`, "hint"));
+    row.append(
+      renderNote(item),
+      actionMetadata("Owner", optionalText(item.ownerDisplayName) || "Not specified"),
+    );
+    if (optionalText(item.dueDate)) row.append(actionMetadata("Due", item.dueDate));
     list.append(row);
   }
   return list;
@@ -298,7 +307,8 @@ function meetingEmail(meeting, segments) {
     : "";
   const pill = (label, value) =>
     `<span style="display:inline-block;margin:8px 8px 0 0;padding:3px 10px;border-radius:12px;background:#ffffff;border:1px solid #dfe2f2;font-size:12px;color:#64697c">` +
-    `<span style="font-weight:600;color:#5056b8;letter-spacing:.4px">${label}</span>&nbsp; ${escapeHtml(value)}</span>`;
+    `<span style="font-weight:600;color:#5056b8;letter-spacing:.4px">${label}</span>&nbsp; ` +
+    `<strong style="font-weight:700;color:#242638">${escapeHtml(value)}</strong></span>`;
   const actionHtml = (item, index) => {
     const marker = numbered
       ? `<span style="display:inline-block;min-width:22px;height:22px;line-height:22px;margin-right:8px;border-radius:11px;background:#5056b8;color:#ffffff;font-size:12px;font-weight:700;text-align:center">${index + 1}</span>`
