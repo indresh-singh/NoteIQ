@@ -44,10 +44,34 @@ Before enabling beta for a production deployment, verify in your tenant:
 - Reconnect works after revocation; denial of consent leaves the previous connection intact.
 - Test both a personal plan and a shared group plan with the intended users.
 
-A successful empty response is shown as no additional plans returned by Microsoft;
+A successful empty response with no saved plans shows **No Planner plans found**
+with guidance to create a plan in Microsoft Planner and click **Refresh**. Discovery
+errors are shown separately. When plans are already saved but there are no more to
+add, the picker shows **No additional Planner plans found**. Plan titles returned
+by Microsoft are not hidden just because they resemble placeholders;
 NoteIQ does not claim that every plan visible in the Planner app is API-accessible.
 Premium plan support is not promised by this integration. Tests simulate Graph;
 live personal-plan compatibility still requires the user's interactive consent.
+
+## Missing group plans: investigation (discovery behavior unchanged)
+
+Connecting personal Planner selects the delegated `/me/planner/plans` branch and
+does not also enumerate group plans. Microsoft describes this endpoint as plans
+shared with the user, whereas `/groups/{id}/planner/plans` lists plans owned by
+that group. Therefore the current personal list is not a complete group inventory.
+The app-only branch enumerates direct Microsoft 365 (`Unified`) group memberships;
+failed individual group lookups are logged and skipped. Also, the picker caches
+discovery until its own **Refresh** button is used or the connection changes.
+
+To confirm a specific missing plan, use the same account, click Planner **Refresh**,
+check the plan's group membership and Basic/Premium type, and compare the user-list
+response with the owning group's response and server discovery logs. No tenant
+responses were inspected for this investigation. A future fix could explicitly
+combine user and authorized group discovery with deduplication and permission
+checks; that behavior has not been implemented.
+
+Microsoft references: [user plans](https://learn.microsoft.com/en-us/graph/api/planneruser-list-plans?view=graph-rest-1.0),
+[group plans](https://learn.microsoft.com/en-us/graph/api/plannergroup-list-plans?view=graph-rest-1.0).
 
 ## Credentials and lifecycle
 

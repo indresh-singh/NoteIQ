@@ -20,6 +20,7 @@ from psycopg_pool import ConnectionPool
 from app.occurrences import select_session, transcript_version
 
 log = logging.getLogger(__name__)
+SESSION_IDLE_SECONDS = 8 * 3600
 
 # Microsoft documents that insights "might take up to four hours to be available
 # after the call ends". Past that, with a margin, a poll is no longer waiting for
@@ -767,7 +768,7 @@ class Store:
             db.execute("DELETE FROM sessions WHERE expires < ?", (time.time(),))
             db.execute(
                 "INSERT INTO sessions VALUES (?, ?, ?)",
-                (digest(token), user_id, time.time() + 8 * 3600),
+                (digest(token), user_id, time.time() + SESSION_IDLE_SECONDS),
             )
         return token
 
@@ -783,6 +784,16 @@ class Store:
     def logout(self, token: str):
         with self.connect() as db:
             db.execute("DELETE FROM sessions WHERE token_hash=?", (digest(token),))
+
+    def renew_session(self, token: str) -> bool:
+        """Extend a live session only; never resurrect expired or revoked access."""
+        now = time.time()
+        with self.connect() as db:
+            return db.execute(
+                """UPDATE sessions SET expires=? WHERE token_hash=? AND expires>?
+                AND user_id IN (SELECT id FROM users WHERE enabled=1)""",
+                (now + SESSION_IDLE_SECONDS, digest(token), now),
+            ).rowcount == 1
 
     def disconnect(self, user_id: str):
         with self.connect() as db:

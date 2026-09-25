@@ -18,6 +18,7 @@ def test_postgres_store_round_trip():
     store.enroll(user_id, "PostgreSQL test")
     token = store.session(user_id)
     assert store.session_user(token)["id"] == user_id
+    assert store.renew_session(token)
 
     store.save_meeting(user_id, "First", {"meeting_id": "meeting", "insight": {"id": "i1"}})
     store.save_meeting(user_id, "Updated", {"meeting_id": "meeting", "insight": {"id": "i2"}})
@@ -36,6 +37,7 @@ def test_postgres_store_round_trip():
     queue_notification(store, user_id, "insight:meeting", "First", "Ready")
     assert store.next_notification()["event_key"] == "insight:meeting"
     store.disconnect(user_id)
+    assert not store.renew_session(token)
 
 
 @pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="PostgreSQL is not configured")

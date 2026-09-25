@@ -6,6 +6,8 @@ function hasActionItems(content, provider) {
     .some((item) => (item.insight?.actionItems || []).some((a) => a.title || a.text));
 }
 let token = "";
+let lastSessionRenewal = -Infinity;
+let renewingSession = false;
 let inTeams = false;
 let loading = false;
 let teamsUserId = "";
@@ -28,6 +30,7 @@ try { token = sessionStorage.getItem("noteiq-session") || ""; } catch { /* Memor
 
 function remember(value) {
   token = value;
+  lastSessionRenewal = -Infinity;
   try { value ? sessionStorage.setItem("noteiq-session", value) : sessionStorage.removeItem("noteiq-session"); } catch {}
 }
 
@@ -55,6 +58,7 @@ function signedOut() {
 }
 
 async function api(path, body, timeoutMs = 30000) {
+  const requestToken = token;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   const requestId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -66,7 +70,7 @@ async function api(path, body, timeoutMs = 30000) {
     ...(body === undefined ? {} : {body: JSON.stringify(body)})
   });
   if (!response.ok) {
-    if (response.status === 401) signedOut();
+    if (response.status === 401 && token === requestToken) signedOut();
     let detail;
     try { detail = (await response.json()).detail; } catch {}
     const error = new Error(typeof detail === "string" ? detail : "NoteIQ couldn't complete this request. Please try again.");
@@ -171,6 +175,22 @@ function createDestinationSelect(items, valueField, labelField, className, acces
     select.append(option);
   }
   return select;
+}
+
+// Only real interaction renews the eight-hour idle window. Background polling
+// must not keep an unattended tab signed in indefinitely.
+async function renewActiveSession(event) {
+  if (!event.isTrusted || document.hidden || !token || renewingSession) return;
+  const now = performance.now();
+  if (now - lastSessionRenewal < 5 * 60 * 1000) return;
+  lastSessionRenewal = now;
+  renewingSession = true;
+  try { await api("/api/session/renew", {}); }
+  catch { /* api handles expiry; transient errors retry on later activity. */ }
+  finally { renewingSession = false; }
+}
+for (const activity of ["pointerdown", "keydown", "wheel", "touchstart"]) {
+  document.addEventListener(activity, renewActiveSession, {passive: true});
 }
 
 function optionalText(value) {
@@ -692,6 +712,9 @@ function renderPlannerPicker() {
   if (!select) return;
   const addedIds = new Set((currentPlanner?.plans || []).map((item) => item.plan_id));
   const options = (availablePlannerPlans || []).filter((item) => !addedIds.has(item.id));
+  const empty = $("#planner-plans-empty");
+  empty.hidden = availablePlannerPlans === null || availablePlannerPlansFailed
+    || availablePlannerPlans.length > 0 || addedIds.size > 0;
   select.replaceChildren();
   select.disabled = true;
   if (availablePlannerPlans === null) {
@@ -699,8 +722,8 @@ function renderPlannerPicker() {
   } else if (availablePlannerPlansFailed) {
     select.append(new Option("Couldn't load plans. Click Refresh to try again.", ""));
   } else if (!options.length) {
-    select.append(new Option(currentPlanner?.delegated_connected
-      ? "No additional plans returned by Microsoft" : "No more group plans. Connect personal Planner for your own plans.", ""));
+    select.append(new Option(addedIds.size
+      ? "No additional Planner plans found" : "No Planner plans found", ""));
   } else {
     select.disabled = false;
     for (const item of options) select.append(new Option(`${item.path} / ${item.name}`, item.id));

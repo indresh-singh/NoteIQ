@@ -519,6 +519,12 @@ def create_app(
         request_repair(request)
         return {"token": store.session(item["user_id"])}
 
+    @app.post("/api/session/renew")
+    async def renew_session(request: Request, user: dict = Depends(current_user)):
+        if not request.app.state.store.renew_session(bearer(request)):
+            raise HTTPException(401, "Your session has expired. Please connect again.")
+        return {"status": "renewed"}
+
     @app.get("/api/me")
     async def me(request: Request, user: dict = Depends(current_user)):
         with request.app.state.store.connect() as db:

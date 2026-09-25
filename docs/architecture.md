@@ -26,6 +26,15 @@ The browser uses TeamsJS 2.56.0 and the Adaptive Cards JavaScript renderer 3.0.6
 
 This avoids reliance on third-party cookies in Teams. Signing in authenticates the user; it does not grant the application's background Graph permissions. A Copilot license, admin consent and the application access policy remain prerequisites.
 
+The eight-hour NoteIQ session window renews on real tab interaction (pointer,
+keyboard, touch or wheel), at most once every five minutes through
+`POST /api/session/renew`. Background polling does not renew it. Expired sessions,
+logged-out sessions and disabled users cannot be renewed. No Microsoft sign-in is
+needed merely because an actively used session crosses its original eight-hour
+deadline. Closing the tab/losing session storage, prolonged inactivity, and Microsoft
+consent or tenant-policy changes may still require sign-in; this is not persistent
+Teams SSO. Microsoft delegated-token renewal remains separate.
+
 ## Background processing
 
 Enrolled users replace the old `PILOT_USER_IDS` environment variable. Enrollment requests subscription setup immediately. The worker renews both transcript and insight subscriptions every 15 minutes with a one-hour expiry. Graph lifecycle callbacks request renewal; missed events are surfaced for manual recovery.

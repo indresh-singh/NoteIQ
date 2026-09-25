@@ -5,7 +5,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from app.store import Store, digest
+from app.store import SESSION_IDLE_SECONDS, Store, digest
 from tests.conftest import TENANT, USER
 
 VERIFIER = "a" * 43
@@ -175,6 +175,71 @@ def test_session_expiry_and_only_hashes_stored(client, store):
         assert db.execute("SELECT token_hash FROM sessions").fetchone()[0] == digest(token)
         db.execute("UPDATE sessions SET expires=0")
     assert client.get("/api/me", headers={"Authorization": "Bearer " + token}).status_code == 401
+
+
+def test_activity_renews_session_but_polling_does_not(client, store, signed_in, monkeypatch):
+    with store.connect() as db:
+        expiry = db.execute("SELECT expires FROM sessions").fetchone()[0]
+    now = expiry - 60
+    monkeypatch.setattr("app.store.time.time", lambda: now)
+    assert client.get("/api/me", headers=signed_in).status_code == 200
+    with store.connect() as db:
+        assert db.execute("SELECT expires FROM sessions").fetchone()[0] == expiry
+    assert client.post("/api/session/renew", headers=signed_in, json={}).status_code == 200
+    with store.connect() as db:
+        assert (
+            db.execute("SELECT expires FROM sessions").fetchone()[0] == now + SESSION_IDLE_SECONDS
+        )
+    now = expiry + 60
+    assert client.get("/api/me", headers=signed_in).status_code == 200
+    now += SESSION_IDLE_SECONDS
+    assert client.post("/api/session/renew", headers=signed_in, json={}).status_code == 401
+
+
+@pytest.mark.parametrize("revocation", ["expired", "logout", "disabled", "disconnect"])
+def test_renewal_cannot_revive_invalid_session(client, store, signed_in, revocation):
+    token = signed_in["Authorization"].removeprefix("Bearer ")
+    if revocation == "expired":
+        with store.connect() as db:
+            db.execute("UPDATE sessions SET expires=0")
+    elif revocation == "logout":
+        store.logout(token)
+    elif revocation == "disconnect":
+        store.disconnect(USER)
+    else:
+        with store.connect() as db:
+            db.execute("UPDATE users SET enabled=0 WHERE id=?", (USER,))
+    assert not store.renew_session(token)
+    assert client.post("/api/session/renew", headers=signed_in, json={}).status_code == 401
+
+
+def test_session_renewal_requires_auth_and_same_origin(client, signed_in):
+    assert client.post("/api/session/renew", json={}).status_code == 401
+    assert (
+        client.post(
+            "/api/session/renew",
+            json={},
+            headers={**signed_in, "Origin": "https://untrusted.invalid"},
+        ).status_code
+        == 403
+    )
+
+
+def test_renewal_only_extends_presented_session(store, monkeypatch):
+    store.enroll(USER, "Session test")
+    first = store.session(USER)
+    second = store.session(USER)
+    with store.connect() as db:
+        db.execute("UPDATE sessions SET expires=1000")
+    monkeypatch.setattr("app.store.time.time", lambda: 900)
+    assert store.renew_session(first)
+    with store.connect() as db:
+        assert (
+            db.execute(
+                "SELECT expires FROM sessions WHERE token_hash=?", (digest(second),)
+            ).fetchone()[0]
+            == 1000
+        )
 
 
 def test_wrong_origin_is_rejected(client, signed_in):
