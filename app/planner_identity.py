@@ -14,7 +14,10 @@ from app.graph_client import GraphClient
 
 log = logging.getLogger(__name__)
 
-PLANNER_SCOPES = ["https://graph.microsoft.com/Tasks.ReadWrite"]
+PLANNER_SCOPES = [
+    "https://graph.microsoft.com/User.Read",
+    "https://graph.microsoft.com/Tasks.ReadWrite",
+]
 
 
 def cache_cipher(config, user_id):

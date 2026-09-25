@@ -216,7 +216,11 @@ async def process_transcript(event: TranscriptEvent, graph: GraphClient, store: 
             subject,
             {
                 "meeting_id": event.meeting_id,
-                "meeting_metadata": {"meeting_type": meeting.get("meetingType")},
+                "meeting_metadata": {
+                    "meeting_type": meeting.get("meetingType"),
+                    "start_date_time": meeting.get("startDateTime"),
+                    "end_date_time": meeting.get("endDateTime"),
+                },
                 "transcript": {
                     "id": event.transcript_id,
                     # getAllTranscripts and a meeting's own /transcripts list can

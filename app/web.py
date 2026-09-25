@@ -393,7 +393,7 @@ def create_app(
         try:
             flow = await asyncio.to_thread(
                 lambda: identity_client().initiate_auth_code_flow(
-                    scopes=["User.Read", *PLANNER_SCOPES] if planner_user else ["User.Read"],
+                    scopes=PLANNER_SCOPES if planner_user else ["User.Read"],
                     redirect_uri=config.redirect_uri,
                     prompt="select_account",
                 )

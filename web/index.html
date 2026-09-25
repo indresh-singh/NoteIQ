@@ -4,11 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NoteIQ · Meeting notes</title>
-  <link rel="stylesheet" href="/static/style.css?v=1.4.8">
+  <link rel="stylesheet" href="/static/style.css?v=1.4.9">
   <script src="/static/vendor/teams.min.js" defer></script>
   <script src="/static/vendor/adaptivecards.min.js" defer></script>
   <script src="/static/vendor/mammoth.browser.min.js" defer></script>
-  <script src="/static/app.js?v=1.5.7" defer></script>
+  <script src="/static/app.js?v=1.5.8" defer></script>
 </head>
 <body>
   <main>
@@ -69,10 +69,14 @@
       </form>
       </section>
       <details class="account"><summary>Account settings</summary>
-        <section id="clickup-settings" hidden>
-          <h2><img src="/static/clickup.svg" alt="" class="clickup-icon">ClickUp</h2>
+        <section id="clickup-settings" class="integration-settings" hidden>
+          <h2><img src="/static/clickup.svg" alt="" class="integration-icon">ClickUp</h2>
+          <div class="integration-connection-actions">
+            <button id="clickup-connect" class="integration-connect"><img src="/static/clickup.svg" alt=""><span id="clickup-connect-label">Connect ClickUp</span></button>
+            <button id="clickup-disconnect" class="integration-disconnect" hidden>Disconnect ClickUp</button>
+          </div>
+          <p class="integration-help">Connect your ClickUp account to discover Lists and send tasks with your permissions. Disconnecting clears saved List selections; tasks in ClickUp remain.</p>
           <p id="clickup-status">Send Copilot action items to a ClickUp List.</p>
-          <button id="clickup-connect"><img src="/static/clickup.svg" alt="">Connect ClickUp</button>
           <div id="clickup-lists-wrap" hidden>
             <ul id="clickup-lists" class="clickup-lists"></ul>
             <form id="clickup-add-list">
@@ -81,13 +85,14 @@
               <button type="button" id="clickup-refresh-lists" title="Refresh the list of ClickUp Lists">Refresh</button>
             </form>
           </div>
-          <button id="clickup-disconnect" hidden>Disconnect ClickUp</button>
         </section>
-        <section id="planner-settings" hidden>
-          <h2><img src="/static/planner.svg" alt="" class="clickup-icon"><img src="/static/planner.svg" alt="" class="integration-icon">Microsoft Planner</h2>
-          <button id="planner-connect" type="button"><img src="/static/planner.svg" alt=""><img src="/static/planner.svg" alt=""><span id="planner-connect-label">Connect personal Planner</span></button>
-          <button id="planner-disconnect" type="button" hidden>Disconnect personal Planner</button>
-          <p class="hint">Connect your Microsoft account to discover personal plans and send tasks with your permissions. Disconnecting clears saved plan selections; tasks in Microsoft Planner remain.</p>
+        <section id="planner-settings" class="integration-settings" hidden>
+          <h2><img src="/static/planner.svg" alt="" class="integration-icon">Microsoft Planner</h2>
+          <div class="integration-connection-actions">
+            <button id="planner-connect" class="integration-connect" type="button"><img src="/static/planner.svg" alt=""><span id="planner-connect-label">Connect Microsoft Planner</span></button>
+            <button id="planner-disconnect" class="integration-disconnect" type="button" hidden>Disconnect Microsoft Planner</button>
+          </div>
+          <p class="integration-help">Connect your Microsoft account to discover personal and shared plans and send tasks with your permissions. Disconnecting clears saved plan selections; tasks in Microsoft Planner remain.</p>
           <p id="planner-status">Send Copilot action items to a Microsoft Planner plan.</p>
           <div id="planner-plans-wrap" hidden>
             <ul id="planner-plans" class="clickup-lists"></ul>

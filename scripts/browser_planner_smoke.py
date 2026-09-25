@@ -80,7 +80,7 @@ def main():
             expect(page.locator("#planner-add-plan button[type=submit]")).to_be_disabled()
             page.locator("#planner-connect").click()
             expect(page.locator("#planner-connect")).to_have_text(
-                "Reconnect personal Planner", timeout=30000
+                "Reconnect Microsoft Planner", timeout=30000
             )
             expect(page.locator("#planner-plans-empty")).to_be_visible()
             expect(page.locator("#planner-plans-empty")).to_contain_text("create a plan")
@@ -108,7 +108,7 @@ def main():
             page.locator("#planner-refresh-tasks").click()
             expect(page.locator("#planner-tasks-empty")).to_be_visible()
             page.locator("#planner-disconnect").click()
-            expect(page.locator("#planner-connect")).to_have_text("Connect personal Planner")
+            expect(page.locator("#planner-connect")).to_have_text("Connect Microsoft Planner")
             assert client.app.state.store.planner_cache(USER) is None
             assert not errors, errors
             browser.close()

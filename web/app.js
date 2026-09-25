@@ -320,8 +320,10 @@ function renderMeetings(meetings, clickup, planner, summaryProvider, summaryProv
 
     function updateProviderText() {
       const has = byProvider[selected].length > 0;
-      const latest = byProvider[selected].map((segment) => segment.insight).find((insight) => insight?.endDateTime);
-      const when = meeting.content.started_at || latest?.endDateTime || meeting.content.transcript?.createdDateTime;
+      const metadata = meeting.content.meeting_metadata || {};
+      const transcript = meeting.content.transcript || {};
+      const when = meeting.content.started_at || metadata.start_date_time
+        || metadata.end_date_time || transcript.endDateTime || transcript.createdDateTime;
       dateLine.textContent = when ? new Date(when).toLocaleString() : "";
       dateLine.hidden = !when;
       hintLine.textContent = has
@@ -623,7 +625,7 @@ function renderClickUp(clickup) {
   if (!clickup.available) return;
   const connected = clickup.connected;
   const lists = clickup.lists || [];
-  $("#clickup-connect").hidden = connected;
+  $("#clickup-connect-label").textContent = connected ? "Reconnect ClickUp" : "Connect ClickUp";
   $("#clickup-lists-wrap").hidden = !connected;
   $("#clickup-disconnect").hidden = !connected;
   if (connected) { ensureAvailableClickUpLists(); renderClickUpPicker(); }
@@ -754,7 +756,7 @@ let currentPlanner = null;
 function renderPlanner(planner) {
   if (currentPlanner?.delegated_connected !== planner.delegated_connected) invalidatePlannerPlans();
   currentPlanner = planner;
-  $("#planner-connect-label").textContent = planner.delegated_connected ? "Reconnect personal Planner" : "Connect personal Planner";
+  $("#planner-connect-label").textContent = planner.delegated_connected ? "Reconnect Microsoft Planner" : "Connect Microsoft Planner";
   $("#planner-disconnect").hidden = !planner.delegated_connected;
   $("#planner-settings").hidden = false;
   $("#planner-shortcut").hidden = false;

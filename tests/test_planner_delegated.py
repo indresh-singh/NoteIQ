@@ -70,6 +70,7 @@ async def test_personal_discovery_paginates_with_delegated_credentials(config, g
             "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/planner/plans?$skiptoken=next",
         },
         {"value": [{"id": "group", "title": "Shared"}]},
+        {"value": []},
     ]
     planner = Planner(config, DelegatedGraph(graph, "delegated-token"), delegated=True)
     plans = await planner.available_plans(USER)
@@ -78,6 +79,50 @@ async def test_personal_discovery_paginates_with_delegated_credentials(config, g
     for call in graph.request.call_args_list:
         assert call.kwargs["access_token"] == "delegated-token"
     graph.list.assert_not_called()
+
+
+async def test_delegated_discovery_adds_and_deduplicates_group_shared_plans(config, graph):
+    graph.request.side_effect = [
+        {
+            "value": [
+                {"id": "personal", "title": "Private", "container": {"type": "user"}},
+                {"id": "already-shared", "title": "Existing shared"},
+            ]
+        },
+        {
+            "value": [
+                {
+                    "id": "group-id",
+                    "displayName": "NoteIQ Planner",
+                    "groupTypes": ["Unified"],
+                },
+                {"id": "security-group", "groupTypes": []},
+            ]
+        },
+        {
+            "value": [
+                {"id": "already-shared", "title": "Existing shared"},
+                {"id": "new-shared", "title": "Shared plan"},
+            ]
+        },
+    ]
+
+    plans = await Planner(
+        config, DelegatedGraph(graph, "delegated-token"), delegated=True
+    ).available_plans(USER)
+
+    assert [plan["id"] for plan in plans] == ["personal", "already-shared", "new-shared"]
+    assert plans[-1] == {
+        "id": "new-shared",
+        "name": "Shared plan",
+        "path": "NoteIQ Planner",
+    }
+    paths = [call.args[1] for call in graph.request.call_args_list]
+    assert paths == [
+        "/me/planner/plans",
+        "/me/memberOf/microsoft.graph.group?$select=id,displayName,groupTypes",
+        "/groups/group-id/planner/plans",
+    ]
 
 
 async def test_graph_never_uses_app_token_for_delegated_call(monkeypatch):

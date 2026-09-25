@@ -66,10 +66,12 @@ class Planner:
         self.delegated = delegated
 
     async def available_plans(self, user_id: str) -> list[dict]:
-        """Plans belonging to the Microsoft 365 Groups this person is a member of.
+        """Personal plans plus plans shared through Microsoft 365 Groups.
 
-        Skips a group's plan lookup instead of failing the whole picker over
-        one restricted or planless group, mirroring ClickUp's available_lists.
+        Graph documents /me/planner/plans as including shared plans, but some
+        group-owned plans are absent from that collection. Explicit group
+        discovery fills that gap. A restricted or planless group is skipped
+        instead of failing the whole picker, mirroring ClickUp's available_lists.
         """
         if self.delegated:
             log.info("Planner discovery started mode=delegated")
@@ -85,7 +87,53 @@ class Planner:
                 for plan in plans
                 if plan.get("id")
             }
-            log.info("Planner discovery completed mode=delegated plans=%d", len(found))
+
+            groups = await _call(
+                self.graph.list(
+                    "/me/memberOf/microsoft.graph.group?$select=id,displayName,groupTypes"
+                )
+            )
+            checked_groups = 0
+            for group in groups:
+                group_id = group.get("id")
+                if not group_id:
+                    continue
+                # When User.Read returns limited group information, groupTypes
+                # is absent. Try the plan lookup in that case; Graph will reject
+                # non-Microsoft-365 groups and we safely skip them below.
+                group_types = group.get("groupTypes")
+                if group_types is not None and "Unified" not in group_types:
+                    continue
+                checked_groups += 1
+                try:
+                    shared_plans = await _call(
+                        self.graph.list(
+                            f"/groups/{quote(group_id, safe='')}/planner/plans"
+                        )
+                    )
+                except ValueError as error:
+                    log.warning(
+                        "Planner group skipped during delegated discovery "
+                        "group_name=%r error=%s",
+                        group.get("displayName"),
+                        error,
+                    )
+                    continue
+                path = group.get("displayName") or "Shared"
+                for plan in shared_plans:
+                    plan_id = plan.get("id")
+                    if plan_id and plan_id not in found:
+                        found[plan_id] = {
+                            "id": plan_id,
+                            "name": plan.get("title", ""),
+                            "path": path,
+                        }
+
+            log.info(
+                "Planner discovery completed mode=delegated groups=%d plans=%d",
+                checked_groups,
+                len(found),
+            )
             return list(found.values())
         groups = await _call(
             self.graph.list(

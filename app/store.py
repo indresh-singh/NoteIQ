@@ -50,26 +50,32 @@ def _meeting_occurred_at(content: dict) -> float | None:
     top of the list ahead of meetings that happened more recently.
     """
     dates = []
-    insights = content.get("insights") or (
-        [{"insight": content["insight"]}] if content.get("insight") else []
+    metadata = content.get("meeting_metadata") or {}
+    dates.extend(
+        value
+        for value in (metadata.get("start_date_time"), metadata.get("end_date_time"))
+        if value
     )
-    for item in insights:
-        end = (item.get("insight") or {}).get("endDateTime")
-        if end:
-            dates.append(end)
     transcripts = content.get("transcripts") or (
         [{"transcript": content["transcript"]}] if content.get("transcript") else []
     )
     for item in transcripts:
-        created_at = (item.get("transcript") or {}).get("createdDateTime")
-        if created_at:
-            dates.append(created_at)
-    if not dates:
-        return None
-    try:
-        return max(datetime.fromisoformat(d.replace("Z", "+00:00")).timestamp() for d in dates)
-    except (ValueError, AttributeError):
-        return None
+        transcript = item.get("transcript") or {}
+        # endDateTime describes the session. createdDateTime is only a fallback
+        # for older records that did not retain the session's own timestamps.
+        occurred = transcript.get("endDateTime") or transcript.get("createdDateTime")
+        if occurred:
+            dates.append(occurred)
+    parsed = []
+    for value in dates:
+        try:
+            stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            parsed.append(stamp.timestamp())
+        except ValueError:
+            continue
+    return max(parsed) if parsed else None
 
 
 def bodies(content: dict, kind: str) -> list[dict]:
@@ -1276,14 +1282,13 @@ class Store:
                 if row:
                     facts = meeting_facts(merged)
                     db.execute(
-                        """UPDATE meetings SET subject=?, content=?, created=?,
-                        occurred_at=COALESCE(?, occurred_at), source=?, settled=?,
+                        """UPDATE meetings SET subject=?, content=?, occurred_at=?,
+                        source=?, settled=?,
                         newest_transcript_at=? WHERE id=?
                         AND EXISTS (SELECT 1 FROM users WHERE id=? AND enabled=1)""",
                         (
                             subject,
                             json.dumps(merged),
-                            time.time(),
                             occurred_at,
                             facts["source"],
                             facts["settled"],
@@ -1371,7 +1376,7 @@ class Store:
                 }
             facts = meeting_facts(content)
             db.execute(
-                """UPDATE meetings SET content=?, occurred_at=COALESCE(?, occurred_at),
+                """UPDATE meetings SET content=?, occurred_at=?,
                 source=?, settled=?, newest_transcript_at=? WHERE id=?""",
                 (
                     json.dumps(content),
